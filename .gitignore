@@ -1,0 +1,82 @@
+# Android / Gradle
+.gradle/
+**/build/
+build/
+out/
+local.properties
+.externalNativeBuild/
+.cxx/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Toolchains and caches
+toolchain/
+tools-cache/
+.gradle-home/
+android-sdk/
+jdk/
+
+# Release/build binaries
+*.apk
+*.aab
+*.apks
+*.dex
+*.class
+
+# Signing material
+*.jks
+*.keystore
+*.p12
+*.pem
+*.key
+
+# Large source/input archives: extract and review before committing
+*.7z
+*.rar
+*.tar
+*.tar.gz
+*.tgz
+
+# Raw geospatial inputs
+*.osm
+*.osm.pbf
+*.pbf
+*.mbtiles
+
+# Real route playback / location-bearing evidence
+*.gpx
+*.kml
+*.kmz
+private-evidence/
+local-evidence/
+test-evidence-private/
+*-directions-*.pdf
+*-route-comparison-*.pdf
+*-route-alternatives-*.pdf
+
+# Logs that may contain local paths or test location data
+*.log
+hs_err_pid*
+
+# Public source must never include original evidence, geographic payloads or backups.
+*.pdf
+*.geojson
+*.sqlite*
+*.db
+*.gzipdata
+*.zip
+*.qcow2
+*.img
+*.jsonl
+national-data/
+offline_roads/
+OSM-PBF/
+OUTPUT/
+.migration-private*/
+visual-route-evidence/
+build-*/
+__pycache__/
+*.pyc

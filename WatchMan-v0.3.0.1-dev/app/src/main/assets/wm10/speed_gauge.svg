@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="WatchMan speed gauge">
+  <defs>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f8d36b"/>
+      <stop offset="0.5" stop-color="#b57a16"/>
+      <stop offset="1" stop-color="#f6e09a"/>
+    </linearGradient>
+  </defs>
+  <circle cx="128" cy="128" r="112" fill="#0e1014" stroke="url(#gold)" stroke-width="8"/>
+  <circle cx="128" cy="128" r="96" fill="#171a20" stroke="#69501f" stroke-width="2"/>
+  <path d="M52 164 A88 88 0 0 1 204 164" fill="none" stroke="#5a606b" stroke-width="9" stroke-linecap="round"/>
+  <path d="M52 164 A88 88 0 0 1 157 47" fill="none" stroke="url(#gold)" stroke-width="9" stroke-linecap="round"/>
+  <g stroke="#d6b455" stroke-width="4" stroke-linecap="round">
+    <path d="M61 159l13-5"/><path d="M64 125l14 1"/><path d="M77 93l12 7"/>
+    <path d="M102 70l7 12"/><path d="M135 61l-1 14"/><path d="M168 71l-7 12"/>
+    <path d="M193 95l-12 7"/><path d="M203 127l-14 1"/><path d="M197 160l-13-5"/>
+  </g>
+  <path d="M128 132 L174 88" stroke="#f4c85c" stroke-width="7" stroke-linecap="round"/>
+  <circle cx="128" cy="132" r="11" fill="#0e1014" stroke="#f4c85c" stroke-width="5"/>
+  <path d="M93 188h70" stroke="#655024" stroke-width="3" stroke-linecap="round"/>
+</svg>

@@ -1,0 +1,58 @@
+package com.bggg.watchman.routing
+
+import com.bggg.watchman.data.CameraPoi
+import com.bggg.watchman.data.CameraType
+import com.bggg.watchman.data.Route
+
+/** Deterministic route/camera analysis kept outside Android UI code for testing and updates. */
+object RouteAnalyzer {
+    const val DEFAULT_CORRIDOR_METERS = 180.0
+    fun countKnownCameras(route: Route, cameras: Collection<CameraPoi>, corridorMeters: Double = DEFAULT_CORRIDOR_METERS): Int {
+        if (route.points.isEmpty() || cameras.isEmpty()) return 0
+        val proximity = RouteProximityIndex(route, corridorMeters)
+        return cameras.count { camera ->
+            if (!isCameraOrSensorForRouting(camera)) return@count false
+            proximity.isWithin(camera.point)
+        }
+    }
+
+    /**
+     * Preserve the user-validated SafeTOC traffic-device population in encounter analysis.
+     * The corrective release requirements supersede the earlier bare-signal exclusion: do not
+     * reduce encounter counts by suppressing TRAFFIC records instead of routing around them.
+     * Toll-only and unknown infrastructure still need relevant device evidence.
+     */
+    fun isCameraOrSensorForRouting(camera: CameraPoi): Boolean {
+        return when (camera.type) {
+            CameraType.ALPR,
+            CameraType.FLOCK,
+            CameraType.RED_LIGHT,
+            CameraType.SPEED,
+            CameraType.HIGHWAY,
+            CameraType.ACOUSTIC,
+            CameraType.RF_SENSOR,
+            CameraType.SURVEILLANCE,
+            CameraType.SENSOR,
+            CameraType.TRAFFIC -> true
+            CameraType.TOLL,
+            CameraType.OTHER -> hasDeviceEvidence(camera)
+        }
+    }
+
+    private fun hasDeviceEvidence(camera: CameraPoi): Boolean {
+        if (!camera.manufacturer.isNullOrBlank() || !camera.operator.isNullOrBlank()) return true
+        val evidenceKeys = listOf(
+            "camera", "surveillance", "enforcement", "monitoring", "sensor", "detector",
+            "manufacturer", "brand", "model", "product", "device", "operator"
+        )
+        val evidenceValues = listOf(
+            "camera", "cctv", "alpr", "anpr", "lpr", "sensor", "monitor", "enforcement",
+            "raven", "shotspotter", "soundthinking", "signaltrace", "eoc plus"
+        )
+        return camera.tags.any { (key, value) ->
+            val lowerKey = key.lowercase()
+            val lowerValue = value.lowercase()
+            evidenceKeys.any { it in lowerKey } || evidenceValues.any { it in lowerValue }
+        }
+    }
+}

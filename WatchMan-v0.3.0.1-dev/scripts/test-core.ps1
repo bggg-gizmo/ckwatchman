@@ -1,6 +1,7 @@
 param(
     [string]$BuildDir = '',
-    [ValidateSet(256,384,512,1024,1536)][int]$CompilerHeapMiB = 1536
+    [ValidateSet(256,384,512,1024,1536)][int]$CompilerHeapMiB = 1536,
+    [string]$ToolchainRoot = $env:WATCHMAN_TOOLCHAIN_ROOT
 )
 
 $ErrorActionPreference = 'Stop'
@@ -16,8 +17,9 @@ if (-not $build.StartsWith($sourcePrefix, [StringComparison]::OrdinalIgnoreCase)
     throw "Refusing build directory outside the source tree: $build"
 }
 
-$jdk = Join-Path $projectRoot 'toolchain\jdk\jdk-17.0.20.1+1'
-$kotlinHome = Join-Path $projectRoot 'toolchain\kotlin\kotlinc'
+if ([string]::IsNullOrWhiteSpace($ToolchainRoot)) { $ToolchainRoot = Join-Path $projectRoot 'toolchain' }
+$jdk = Join-Path $ToolchainRoot 'jdk\jdk-17.0.20.1+1'
+$kotlinHome = Join-Path $ToolchainRoot 'kotlin\kotlinc'
 $java = Join-Path $jdk 'bin\java.exe'
 $compilerClasspath = Join-Path $kotlinHome 'lib\*'
 $stdlib = Join-Path $kotlinHome 'lib\kotlin-stdlib.jar'

@@ -34,6 +34,10 @@ Permitted consequences include:
 
 Exposure is the primary objective. ETA is secondary within explicit detour/interactivity limits.
 
+User clarification, 2026-11-06: **No Cams is strict.** Route around every known meaningful camera/sensor, using longer legal routes and snaking through side streets when needed. Permit a nonzero encounter only when it is proven unavoidable. A timeout, provider limitation, exhausted search budget, or unsuccessful avoidance request does not prove unavoidability. A lower observed count from a weighted heuristic must not be presented as a qualifying strict No Cams route. Preserve all accepted traffic-device data and every listed camera/sensor family.
+
+The suggested No Cams Scenic option is a separate future design idea. It does not relax this requirement or change the existing five-mode UI.
+
 ### Full Cams / Most Cams
 
 Actively search through as many meaningful known camera/sensor encounters as possible within explicit reasonable-detour limits.

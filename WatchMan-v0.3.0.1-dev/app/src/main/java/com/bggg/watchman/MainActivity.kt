@@ -84,6 +84,11 @@ import com.bggg.watchman.routing.NavigationProgress
 import com.bggg.watchman.routing.RouteAnalyzer
 import com.bggg.watchman.routing.RouteGeometry
 import com.bggg.watchman.routing.RouteShaper
+import com.bggg.watchman.routing.NoCamsObstaclePlanner
+import com.bggg.watchman.routing.NoCamsRouteMonitor
+import com.bggg.watchman.routing.ValhallaObstacleRoutingProvider
+import com.bggg.watchman.storage.DeviceSearchRegion
+import com.bggg.watchman.storage.RoutingDeviceSnapshot
 import com.bggg.watchman.routing.RouteScorer
 import com.bggg.watchman.routing.RoutePlanningPolicy
 import com.bggg.watchman.routing.RouteContextPolicy
@@ -264,8 +269,11 @@ class MainActivity : Activity() {
     private var deviceSnapshotAt = 0L
     private var deviceSnapshotPoint: GeoPoint? = null
     private var deviceSnapshotReady = false
-    private data class DeviceLayerRequest(val point: GeoPoint?, val route: Route?, val active: Route?, val preview: Route?)
-    private lateinit var deviceLayerWorker: CoalescingWorker<DeviceLayerRequest, List<CameraPoi>>
+    private data class DeviceLayerRequest(val point: GeoPoint?, val route: Route?, val active: Route?, val preview: Route?,
+        val checkNoCams: Boolean = false)
+    private data class DeviceLayerResult(val devices: List<CameraPoi>, val obstacleAhead: Boolean)
+    private lateinit var deviceLayerWorker: CoalescingWorker<DeviceLayerRequest, DeviceLayerResult>
+    private var lastNoCamsCheckAt = 0L
     private data class NationalSourceSummary(val regions: String, val devices: String, val details: List<String>, val failed: Boolean)
     private lateinit var nationalSourceSummaryWorker: CoalescingWorker<LinearLayout, NationalSourceSummary>
     private data class DirectionsDeviceRequest(
@@ -338,8 +346,18 @@ class MainActivity : Activity() {
         deviceRepository = AuthoritativeDeviceRepository(db, nationalCameraCache, regionalCameraCache)
         deviceLayerWorker = CoalescingWorker(executor, ::postToUi, { request ->
             check(Looper.myLooper() != Looper.getMainLooper()) { "Device snapshots must load off-main" }
-            if (request.route != null) routeCameraCandidates(listOf(request.route))
-            else nearbyCameraCandidates(checkNotNull(request.point))
+            val cameras = if (request.route != null) routeCameraCandidates(listOf(request.route))
+                else nearbyCameraCandidates(checkNotNull(request.point))
+            val checkStarted = monotonicMillis()
+            val cancelled = { Thread.currentThread().isInterrupted || monotonicMillis() - checkStarted >= 2_000L }
+            val checkActive = { check(!cancelled()) { "No Cams remaining-route check cancelled or deadline reached" } }
+            val remaining = if (request.checkNoCams && request.active != null && request.point != null)
+                NoCamsRouteMonitor.remainingRoute(request.active, request.point, checkActive) else null
+            val obstacleAhead = remaining?.let { route ->
+                val snapshot = noCamsDeviceSnapshot(route, checkNotNull(request.point), cancelled)
+                NoCamsRouteMonitor.hasObstacle(route, snapshot, checkActive)
+            } ?: false
+            DeviceLayerResult(cameras, obstacleAhead)
         }, ::publishDeviceLayer)
         nationalSourceSummaryWorker = CoalescingWorker(executor, ::postToUi,
             { readNationalSourceSummary() }, ::publishNationalSourceSummary)
@@ -1407,8 +1425,15 @@ class MainActivity : Activity() {
         requireAvailable: Boolean = false
     ): List<CameraPoi> {
         if (routes.isEmpty()) return emptyList()
-        val snapshot = deviceRepository.alongRoutes(routes, corridorMeters)
+        val snapshot = deviceRepository.alongRoutes(routes, corridorMeters, includeRegional = true)
         return (if (requireAvailable) snapshot.requireAvailable() else snapshot).devices
+    }
+
+    private fun noCamsDeviceSnapshot(route: Route, origin: GeoPoint, cancelled: () -> Boolean): RoutingDeviceSnapshot {
+        val region = DeviceSearchRegion.forOnlineRoute(route, listOf(origin, route.destination.point),
+            ROUTE_CAMERA_CORRIDOR_METERS)
+        return deviceRepository.withinRegion(region, maximumRowsPerLayer = 50_000, cancelled = cancelled)
+            .freezeForRouting(region.queryScope)
     }
 
     private fun nearbyCameraCandidates(point: GeoPoint): List<CameraPoi> {
@@ -1428,16 +1453,22 @@ class MainActivity : Activity() {
     }
 
     private fun requestDeviceLayer(request: DeviceLayerRequest): Boolean {
-        latestDeviceLayerRequest = request
-        return deviceLayerWorker.request(request)
+        val now = monotonicMillis()
+        val check = request.point != null && request.active != null &&
+            activeRoutePreference == RoutePreference.FEWEST_CAMERAS && now - lastNoCamsCheckAt >= REROUTE_MIN_INTERVAL_MS
+        val scheduled = request.copy(checkNoCams = check)
+        if (check) lastNoCamsCheckAt = now
+        latestDeviceLayerRequest = scheduled
+        return deviceLayerWorker.request(scheduled)
     }
 
-    private fun publishDeviceLayer(request: DeviceLayerRequest, result: Result<List<CameraPoi>>) {
+    private fun publishDeviceLayer(request: DeviceLayerRequest, result: Result<DeviceLayerResult>) {
         if (request.active !== currentRoute || request.preview !== previewRoute || request.route !== latestDeviceLayerRequest?.route) return
         val location = currentLocation
         if (request.point != null && location != null &&
             Geo.distanceMeters(request.point, GeoPoint(location.latitude, location.longitude)) > CAMERA_CACHE_RADIUS_METERS / 2.0) return
-        result.onSuccess { snapshot ->
+        result.onSuccess { layer ->
+            val snapshot = layer.devices
             currentCameras = snapshot
             deviceSnapshotAt = monotonicMillis()
             deviceSnapshotPoint = request.point
@@ -1447,6 +1478,12 @@ class MainActivity : Activity() {
             if (request.route == null && location != null) {
                 handleCameraAlert(location)
                 if (currentRoute != null) NavigationForegroundService.submitActivityLocation(location, snapshot)
+            }
+            val active = currentRoute
+            if (layer.obstacleAhead && active != null && activeRoutePreference == RoutePreference.FEWEST_CAMERAS &&
+                !routePlanningInFlight && System.currentTimeMillis() - lastRerouteAt > REROUTE_MIN_INTERVAL_MS) {
+                lastRerouteAt = System.currentTimeMillis()
+                planRoutes(active.destination, RoutePreference.FEWEST_CAMERAS, automatic = true)
             }
         }.onFailure { android.util.Log.w("WatchMan", "Device snapshot unavailable; retaining previous cache", it) }
     }
@@ -2046,6 +2083,9 @@ class MainActivity : Activity() {
             var priorityCoverageAttempted = false
             var priorityCoverageFailure: String? = null
             var priorityCoverageStatuses: List<CameraSourceStatus> = emptyList()
+            var obstaclePlan: NoCamsObstaclePlanner.Planned? = null
+            var obstacleRoadRequestCount = 0
+            var obstacleExcludedDeviceCount = 0
 
             fun markPlanningPhase(name: String) {
                 val now = monotonicMillis()
@@ -2091,7 +2131,10 @@ class MainActivity : Activity() {
                         selectedDurationSeconds = selected?.durationSeconds,
                         viewport = selected?.points?.let { LocalDiagnostics.viewport(it) },
                         fallback = fallbackDiagnostic,
-                        error = error
+                        error = error,
+                        obstacleRoadRequests = obstacleRoadRequestCount,
+                        obstacleExcludedDevices = obstacleExcludedDeviceCount,
+                        obstacleSnapshotRevision = obstaclePlan?.snapshot?.revision
                     )
                 )
             }
@@ -2121,7 +2164,36 @@ class MainActivity : Activity() {
                     }
                 }
 
-                val baselineRoutes = routingProvider.routes(origin, destination, ROUTE_ALTERNATIVE_REQUEST_COUNT)
+                val cancelled = { !routePlanning.isCurrent(planningToken) ||
+                    RoutePlanningPolicy.remainingMillis(planningStartedAt, monotonicMillis()) <= 0L }
+                val baselineRoutes = if (preference == RoutePreference.FEWEST_CAMERAS) {
+                    val roadProvider = ValhallaObstacleRoutingProvider()
+                    postRoutePlanningUpdate(planningToken) {
+                        statusText.text = "Searching roads around known cameras / sensors…"
+                        tripText.text = "Checking the complete path and each detour against retained device data."
+                    }
+                    val planner = NoCamsObstaclePlanner(
+                        router = { from, to, exclusions, remaining ->
+                            obstacleRoadRequestCount++
+                            obstacleExcludedDeviceCount = exclusions.devices.size
+                            try { roadProvider.route(from, to, exclusions, remaining) }
+                            finally { markPlanningPhase("obstacleRoad$obstacleRoadRequestCount") }
+                        },
+                        readDevices = { route -> noCamsDeviceSnapshot(route, origin, cancelled) },
+                        acquire = { route, waitMs ->
+                            if (waitMs >= 1_000L) {
+                                priorityCoverageAttempted = true
+                                runCatching { fetchAndPersistRouteCoverage(listOf(route), waitMs, "No Cams road exclusions") }
+                                    .onSuccess { priorityCoverageStatuses = it }
+                                    .onFailure { priorityCoverageFailure = it.message ?: it.javaClass.simpleName }
+                            }
+                        },
+                        now = ::monotonicMillis
+                    )
+                    val planned = planner.plan(origin, destination, planningStartedAt, cancelled)
+                    obstaclePlan = planned
+                    listOf(planned.route)
+                } else routingProvider.routes(origin, destination, ROUTE_ALTERNATIVE_REQUEST_COUNT)
                 baselineRouteCount = baselineRoutes.size
                 baselineProviders = baselineRoutes.map { it.provider }.distinct().sorted()
                 markPlanningPhase("baselineProvider")
@@ -2133,7 +2205,7 @@ class MainActivity : Activity() {
                     planningStartedAt,
                     monotonicMillis()
                 )
-                if (cameraSensitive && priorityCoverageWaitMs > 0L) {
+                if (cameraSensitive && preference != RoutePreference.FEWEST_CAMERAS && priorityCoverageWaitMs > 0L) {
                     priorityCoverageAttempted = true
                     postRoutePlanningUpdate(planningToken) {
                         statusText.text = "Priority acquisition · route cameras / sensors…"
@@ -2153,12 +2225,12 @@ class MainActivity : Activity() {
                     markPlanningPhase("priorityRouteCoverage")
                 }
                 val shapingCameras = when (preference) {
-                    RoutePreference.FEWEST_CAMERAS -> routeCameraCandidates(baselineRoutes, 1_000.0)
+                    RoutePreference.FEWEST_CAMERAS -> emptyList()
                     RoutePreference.MOST_CAMERAS -> routeCameraCandidates(baselineRoutes, RouteShaper.THROUGH_SEARCH_CORRIDOR_METERS)
                     else -> emptyList()
                 }
                 val waypointSets = when (preference) {
-                    RoutePreference.FEWEST_CAMERAS -> RouteShaper.aroundWaypointSets(baselineRoutes, shapingCameras)
+                    RoutePreference.FEWEST_CAMERAS -> emptyList()
                     RoutePreference.MOST_CAMERAS -> RouteShaper.throughWaypointSets(baselineRoutes, shapingCameras)
                     RoutePreference.SCENIC -> RouteShaper.scenicWaypointSets(origin, destination.point)
                     RoutePreference.FASTEST,
@@ -2186,7 +2258,9 @@ class MainActivity : Activity() {
                 val measuredCandidates = RouteGeometry.deduplicate(baselineRoutes + shapedRoutes)
                 deduplicatedCandidateCount = measuredCandidates.size
                 val routeCameras = RoutePlanningPolicy.cameraSnapshotBeforePublication(preference) {
-                    runCatching { routeCameraCandidates(measuredCandidates) }.getOrDefault(emptyList())
+                    if (preference == RoutePreference.FEWEST_CAMERAS) {
+                        noCamsDeviceSnapshot(baselineRoutes.single(), origin, cancelled).entries.map { it.device }
+                    } else routeCameraCandidates(measuredCandidates, requireAvailable = true)
                 }
                 candidateDeviceCount = routeCameras.size
                 markPlanningPhase("deviceExposureFetch")
@@ -2219,8 +2293,15 @@ class MainActivity : Activity() {
                 }
                 exposureCounts = analyses.map { it.knownCameraCount }
                 val selected = RouteScorer.select(preference, analyses)
+                if (preference == RoutePreference.FEWEST_CAMERAS) {
+                    check(selected.knownCameraCount == 0 && !cancelled()) {
+                        "New device data or deadline changed during No Cams validation; please retry"
+                    }
+                }
                 selectedDiagnosticRoute = selected.route
-                val fallbackNotice = RoutePlanningPolicy.cameraFallbackMessage(
+                val fallbackNotice = if (preference == RoutePreference.FEWEST_CAMERAS) {
+                    "No known encounters in current device caches. Unacquired or unmapped devices remain unknown."
+                } else RoutePlanningPolicy.cameraFallbackMessage(
                     preference,
                     shapingCameras.size,
                     shapedRoutes.size,
@@ -2290,9 +2371,15 @@ class MainActivity : Activity() {
                     routePlanningInFlight = false
                     if (!automatic) setPendingRouteRequest(pendingRouteRequest?.copy(stage = PendingRouteRequest.Stage.CHOOSE_MODE))
                     if (automatic && currentRoute != null) {
-                        statusText.text = "Reroute unavailable · continuing current route"
-                        tripText.text = "The route provider failed; guidance remains locked to the current route and will retry after the bounded cooldown."
-                        toast("Reroute failed; continuing the current route")
+                        if (preference == RoutePreference.FEWEST_CAMERAS) {
+                            statusText.text = "No Cams diversion unavailable"
+                            tripText.text = "The current route may encounter known devices. $failure"
+                            toast("No Cams diversion unavailable; current guidance may cross devices")
+                        } else {
+                            statusText.text = "Reroute unavailable · continuing current route"
+                            tripText.text = "The route provider failed; guidance remains locked to the current route and will retry after the bounded cooldown."
+                            toast("Reroute failed; continuing the current route")
+                        }
                     } else {
                         statusText.text = "Routing unavailable"
                         tripText.text = (e.cause ?: e).message ?: "Route analysis failed"

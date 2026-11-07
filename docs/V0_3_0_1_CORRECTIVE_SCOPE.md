@@ -41,6 +41,8 @@ Preferred path objective:
 
 Exposure compares first.
 
+Strictness clarification from the user on 2026-11-06: nonzero exposure requires proof that it is unavoidable. Exhausting a bounded/public-provider search is not such proof. Keep searching legal longer/snaking paths when needed; do not substitute an uncertified weighted candidate under No Cams. All accepted traffic devices and listed sensor families remain included. The separate No Cams Scenic suggestion has not been specified or added to the app.
+
 ### Most Cams / Full Cams
 
 Required:

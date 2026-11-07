@@ -22,7 +22,11 @@ object RouteCorridor {
     }
 
     fun windows(routes: List<Route>, radiusMeters: Double, maxWindows: Int = MAX_WINDOWS): List<Window> {
-        val usable = routes.map { it.points }.filter { it.size >= 2 }
+        // Query-only geometry includes original endpoint disks after a provider road snap.
+        // Stored/displayed routes remain exact; later analysis rejects overinclusive candidates.
+        val usable = routes.map { route -> route.requestedOrigin?.let {
+            listOf(it) + route.points + route.destination.point
+        } ?: route.points }.filter { it.size >= 2 }
         if (usable.isEmpty()) return emptyList()
         val limit = maxWindows.coerceAtLeast(usable.size)
         val totalMeters = usable.sumOf(::pathMeters)

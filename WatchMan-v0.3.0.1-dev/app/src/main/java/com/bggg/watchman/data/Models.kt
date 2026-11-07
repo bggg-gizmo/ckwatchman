@@ -77,7 +77,9 @@ data class Route(
     val durationSeconds: Double,
     val destination: SearchResult,
     val provider: String = "OSRM",
-    val alternativeIndex: Int = 0
+    val alternativeIndex: Int = 0,
+    /** Original requested endpoint for exposure accounting, never proof of legal road access. */
+    val requestedOrigin: GeoPoint? = null
 )
 
 enum class RoutePreference(val label: String, val description: String) {

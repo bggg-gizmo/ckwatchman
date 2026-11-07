@@ -42,6 +42,7 @@ object ActiveRouteStateCodec {
                 .put("durationSeconds", route.durationSeconds)
                 .put("provider", route.provider)
                 .put("alternativeIndex", route.alternativeIndex)
+                .put("requestedOrigin", route.requestedOrigin?.let(::pointJson) ?: JSONObject.NULL)
                 .put("destination", JSONObject()
                     .put("displayName", route.destination.displayName)
                     .put("point", pointJson(route.destination.point))
@@ -68,7 +69,10 @@ object ActiveRouteStateCodec {
                 durationSeconds = routeJson.getDouble("durationSeconds"),
                 destination = destinationJson.toSearchResult(),
                 provider = routeJson.optString("provider", "OSRM"),
-                alternativeIndex = routeJson.optInt("alternativeIndex", 0)
+                alternativeIndex = routeJson.optInt("alternativeIndex", 0),
+                requestedOrigin = routeJson.optJSONObject("requestedOrigin")?.toPoint()?.also {
+                    require(it.lat.isFinite() && it.lat in -90.0..90.0 && it.lon.isFinite() && it.lon in -180.0..180.0)
+                }
             )
             require(root.getString("routeIdentity") == routeIdentity(route))
             ActiveRouteState(

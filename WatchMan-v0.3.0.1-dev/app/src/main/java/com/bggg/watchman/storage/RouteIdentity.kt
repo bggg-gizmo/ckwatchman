@@ -22,6 +22,12 @@ object RouteIdentity {
         route.points.forEach { point ->
             update(String.format(Locale.US, "%.6f,%.6f;", point.lat, point.lon))
         }
+        route.requestedOrigin?.let { origin ->
+            update("|requested-origin-v1:")
+            update(java.lang.Double.toHexString(origin.lat))
+            update(",")
+            update(java.lang.Double.toHexString(origin.lon))
+        }
         return digest.digest().joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
     }
 }

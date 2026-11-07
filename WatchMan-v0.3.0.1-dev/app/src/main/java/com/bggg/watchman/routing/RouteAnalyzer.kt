@@ -3,6 +3,7 @@ package com.bggg.watchman.routing
 import com.bggg.watchman.data.CameraPoi
 import com.bggg.watchman.data.CameraType
 import com.bggg.watchman.data.Route
+import com.bggg.watchman.util.Geo
 
 /** Deterministic route/camera analysis kept outside Android UI code for testing and updates. */
 object RouteAnalyzer {
@@ -12,8 +13,18 @@ object RouteAnalyzer {
         val proximity = RouteProximityIndex(route, corridorMeters)
         return cameras.count { camera ->
             if (!isCameraOrSensorForRouting(camera)) return@count false
-            proximity.isWithin(camera.point)
+            proximity.isWithin(camera.point) || overlapsRequestedEndpoint(camera, route, corridorMeters)
         }
+    }
+
+    /** Retain observed endpoint-area devices after road snapping. This is accounting, NOT an
+     * unavoidability certificate: a geocoded facility point is not a proven vehicle entrance.
+     * Legacy routes without endpoint metadata keep their previous geometric accounting.
+     */
+    fun overlapsRequestedEndpoint(camera: CameraPoi, route: Route, corridorMeters: Double = DEFAULT_CORRIDOR_METERS): Boolean {
+        val origin = route.requestedOrigin ?: return false
+        return Geo.distanceMeters(origin, camera.point) <= corridorMeters ||
+            Geo.distanceMeters(route.destination.point, camera.point) <= corridorMeters
     }
 
     /**

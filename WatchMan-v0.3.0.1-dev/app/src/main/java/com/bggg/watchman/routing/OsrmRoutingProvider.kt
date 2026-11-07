@@ -191,7 +191,8 @@ class OsrmRoutingProvider : RoutingProvider {
         return out
     }
 
-    private fun parseRoute(r: JSONObject, destination: SearchResult, base: String, alternativeIndex: Int): Route {
+    /** Shared OSRM-format decoder; Valhalla's OSRM output preserves the existing maneuver UI. */
+    internal fun parseRoute(r: JSONObject, destination: SearchResult, base: String, alternativeIndex: Int): Route {
         val geom = r.getJSONObject("geometry").getJSONArray("coordinates")
         val points = ArrayList<GeoPoint>(geom.length())
         for (i in 0 until geom.length()) {

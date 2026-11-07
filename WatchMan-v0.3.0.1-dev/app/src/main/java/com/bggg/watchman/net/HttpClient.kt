@@ -32,6 +32,9 @@ object HttpClient {
         return request(url, "POST", body, timeoutMs, attempts)
     }
 
+    fun postJson(url: String, body: String, timeoutMs: Int, headers: Map<String, String> = emptyMap()): String =
+        request(url, "POST", body, timeoutMs, 1, "application/json; charset=UTF-8", headers)
+
     /** Single-attempt bounded binary GET sharing the same total deadline and disconnect watchdog. */
     fun getBytes(
         url: String,
@@ -69,7 +72,9 @@ object HttpClient {
         }
     }
 
-    private fun request(url: String, method: String, body: String?, timeoutMs: Int, attempts: Int): String {
+    private fun request(url: String, method: String, body: String?, timeoutMs: Int, attempts: Int,
+        contentType: String = "application/x-www-form-urlencoded; charset=UTF-8",
+        headers: Map<String, String> = emptyMap()): String {
         var last: Exception? = null
         val totalAttempts = attempts.coerceIn(1, 3)
         val deadline = OperationDeadline(timeoutMs.coerceIn(1_000, 60_000).toLong())
@@ -84,13 +89,14 @@ object HttpClient {
                 connection.requestMethod = method
                 connection.setRequestProperty("User-Agent", ProviderConfig.USER_AGENT)
                 connection.setRequestProperty("Accept", "application/json, application/geo+json, application/xml, text/xml, */*;q=0.5")
+                headers.forEach { (key, value) -> connection.setRequestProperty(key, value) }
                 connection.instanceFollowRedirects = true
                 val watchdog = deadlineScheduler.schedule({ connection.disconnect() }, remaining, TimeUnit.MILLISECONDS)
                 try {
                     if (body != null) {
                         val bytes = body.toByteArray(StandardCharsets.UTF_8)
                         connection.doOutput = true
-                        connection.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+                        connection.setRequestProperty("Content-Type", contentType)
                         connection.setFixedLengthStreamingMode(bytes.size)
                         connection.outputStream.use { it.write(bytes) }
                     }

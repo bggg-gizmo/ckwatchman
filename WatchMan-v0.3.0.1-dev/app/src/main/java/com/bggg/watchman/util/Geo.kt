@@ -51,7 +51,8 @@ object Geo {
     }
 
     /** Continuous projection onto route geometry, independent of route vertex density. */
-    fun projectOntoRoute(p: GeoPoint, route: List<GeoPoint>): RouteProjection? {
+    fun projectOntoRoute(p: GeoPoint, route: List<GeoPoint>, checkActive: () -> Unit = {}): RouteProjection? {
+        checkActive()
         if (route.isEmpty()) return null
         if (route.size == 1) {
             return RouteProjection(0, 0.0, 0.0, distanceMeters(p, route[0]), route[0])
@@ -65,6 +66,7 @@ object Geo {
         var cumulative = 0.0
         var best: RouteProjection? = null
         for (i in 0 until route.lastIndex) {
+            if (i % 128 == 0) checkActive()
             val a = route[i]
             val b = route[i + 1]
             val segmentMeters = distanceMeters(a, b)
@@ -85,6 +87,7 @@ object Geo {
             if (best == null || candidate.distanceToRouteMeters < best.distanceToRouteMeters) best = candidate
             cumulative += segmentMeters
         }
+        checkActive()
         return best
     }
 

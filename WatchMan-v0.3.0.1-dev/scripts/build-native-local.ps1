@@ -1,5 +1,8 @@
 param(
-    [string]$BuildDir = ''
+    [string]$BuildDir = '',
+    [string]$ToolchainRoot = $env:WATCHMAN_TOOLCHAIN_ROOT,
+    [ValidateSet(256,384,512,1024,1536)][int]$CompilerHeapMiB = 512,
+    [switch]$CompileOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -15,9 +18,10 @@ if (-not $build.StartsWith($sourcePrefix, [StringComparison]::OrdinalIgnoreCase)
     throw "Refusing build directory outside the source tree: $build"
 }
 
-$jdk = Join-Path $projectRoot 'toolchain\jdk\jdk-17.0.20.1+1'
-$sdk = Join-Path $projectRoot 'toolchain\android-sdk'
-$kotlinHome = Join-Path $projectRoot 'toolchain\kotlin\kotlinc'
+if ([string]::IsNullOrWhiteSpace($ToolchainRoot)) { $ToolchainRoot = Join-Path $projectRoot 'toolchain' }
+$jdk = Join-Path $ToolchainRoot 'jdk\jdk-17.0.20.1+1'
+$sdk = Join-Path $ToolchainRoot 'android-sdk'
+$kotlinHome = Join-Path $ToolchainRoot 'kotlin\kotlinc'
 $java = Join-Path $jdk 'bin\java.exe'
 $javac = Join-Path $jdk 'bin\javac.exe'
 $jar = Join-Path $jdk 'bin\jar.exe'
@@ -65,29 +69,33 @@ if ($LASTEXITCODE -ne 0) { throw "AAPT2 link failed: $LASTEXITCODE" }
 Write-Output 'GATE 3/8: generated R javac and full Kotlin compile'
 $rJava = @(Get-ChildItem -LiteralPath $generated -Filter '*.java' -Recurse -File | ForEach-Object FullName)
 if ($rJava.Count -gt 0) {
-    $javacArgs = @('-source', '8', '-target', '8', '-bootclasspath', $androidJar, '-d', $classes) + $rJava
+    $javacArgs = @('-J-Xmx128m', '-source', '8', '-target', '8', '-bootclasspath', $androidJar, '-d', $classes) + $rJava
     & $javac @javacArgs
     if ($LASTEXITCODE -ne 0) { throw "javac failed: $LASTEXITCODE" }
 }
 $kotlinFiles = @(Get-ChildItem -LiteralPath (Join-Path $sourceRoot 'app\src\main\java') -Filter '*.kt' -Recurse -File | ForEach-Object FullName)
 if ($kotlinFiles.Count -eq 0) { throw 'No Kotlin application sources found' }
 $compileClasspath = @($androidJar, $classes, $stdlib, $stdlib7, $stdlib8) -join ';'
-$kotlinArgs = @('-Xmx1536m', '-cp', $kotlinCompilerClasspath, 'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler') + $kotlinFiles + @('-classpath', $compileClasspath, '-jvm-target', '1.8', '-d', $classes)
+$kotlinArgs = @("-Xmx${CompilerHeapMiB}m", '-XX:MaxMetaspaceSize=192m', '-XX:ActiveProcessorCount=2', '-cp', $kotlinCompilerClasspath, 'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler') + $kotlinFiles + @('-classpath', $compileClasspath, '-jvm-target', '1.8', '-d', $classes)
 & $java @kotlinArgs
 if ($LASTEXITCODE -ne 0) { throw "Kotlin compile failed: $LASTEXITCODE" }
+if ($CompileOnly) {
+    Write-Output 'COMPILE ONLY: resource/link/javac/Kotlin complete. DEX/packaging/release gates not run; no APK produced.'
+    return
+}
 
 Write-Output 'GATE 4/8: application JAR and official D8'
 $appJar = Join-Path $build 'app-classes.jar'
 & $jar cf $appJar -C $classes .
 if ($LASTEXITCODE -ne 0) { throw "jar failed: $LASTEXITCODE" }
-$d8Args = @('-cp', $d8Jar, 'com.android.tools.r8.D8', '--lib', $androidJar, '--min-api', '26', '--output', $dex, $appJar, $stdlib, $stdlib7, $stdlib8)
+$d8Args = @('-Xmx512m', '-XX:ActiveProcessorCount=2', '-cp', $d8Jar, 'com.android.tools.r8.D8', '--lib', $androidJar, '--min-api', '26', '--output', $dex, $appJar, $stdlib, $stdlib7, $stdlib8)
 & $java @d8Args
 if ($LASTEXITCODE -ne 0) { throw "D8 failed: $LASTEXITCODE" }
 $dexFiles = @(Get-ChildItem -LiteralPath $dex -Filter 'classes*.dex' -File | Sort-Object Name)
 if ($dexFiles.Count -eq 0) { throw 'D8 produced no classes*.dex' }
 
 Write-Output 'GATE 5/8: official D8 structural re-feed'
-$refeedArgs = @('-cp', $d8Jar, 'com.android.tools.r8.D8', '--lib', $androidJar, '--min-api', '26', '--output', $dexVerify) + @($dexFiles.FullName)
+$refeedArgs = @('-Xmx512m', '-XX:ActiveProcessorCount=2', '-cp', $d8Jar, 'com.android.tools.r8.D8', '--lib', $androidJar, '--min-api', '26', '--output', $dexVerify) + @($dexFiles.FullName)
 & $java @refeedArgs
 if ($LASTEXITCODE -ne 0) { throw "D8 structural re-feed failed: $LASTEXITCODE" }
 if (-not (Test-Path -LiteralPath (Join-Path $dexVerify 'classes.dex'))) { throw 'D8 re-feed produced no classes.dex' }
@@ -105,9 +113,9 @@ try {
         $existingAsset = $archive.GetEntry($entryName)
         if ($null -ne $existingAsset) { $existingAsset.Delete() }
         [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $assetFile.FullName, $entryName, [IO.Compression.CompressionLevel]::NoCompression) | Out-Null
-        $existing = $archive.GetEntry($dexFile.Name)
     }
     foreach ($dexFile in $dexFiles) {
+        $existing = $archive.GetEntry($dexFile.Name)
         if ($null -ne $existing) { $existing.Delete() }
         [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $dexFile.FullName, $dexFile.Name, [IO.Compression.CompressionLevel]::NoCompression) | Out-Null
     }

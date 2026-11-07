@@ -1,14 +1,22 @@
 param([string]$BuildName = 'build-corrective-tests',
-    [ValidateSet(256,384,512,1024)][int]$CompilerHeapMiB = 1024)
+    [ValidateSet(256,384,512,1024)][int]$CompilerHeapMiB = 1024,
+    [string]$ToolchainRoot = $env:WATCHMAN_TOOLCHAIN_ROOT)
 $ErrorActionPreference = 'Stop'
 $sourceRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $projectRoot = (Resolve-Path (Join-Path $sourceRoot '..')).Path
 if ($BuildName -notmatch '^build-[a-zA-Z0-9-]+$') { throw 'Use a simple build directory name' }
 $build = Join-Path $sourceRoot $BuildName
 New-Item -ItemType Directory -Force -Path $build | Out-Null
-$java = Join-Path $projectRoot 'toolchain/jdk/jdk-17.0.20.1+1/bin/java.exe'
-$kotlin = Join-Path $projectRoot 'toolchain/kotlin/kotlinc/lib'
+if ([string]::IsNullOrWhiteSpace($ToolchainRoot)) { $ToolchainRoot = Join-Path $projectRoot 'toolchain' }
+$java = Join-Path $ToolchainRoot 'jdk/jdk-17.0.20.1+1/bin/java.exe'
+$kotlin = Join-Path $ToolchainRoot 'kotlin/kotlinc/lib'
 $sources = @(
+    (Join-Path $sourceRoot 'app/src/main/java/com/bggg/watchman/routing/NoCamsObstaclePlanner.kt'),
+    (Join-Path $sourceRoot 'app/src/main/java/com/bggg/watchman/routing/NoCamsRouteMonitor.kt'),
+    (Join-Path $sourceRoot 'app/src/main/java/com/bggg/watchman/routing/RouteCorridor.kt'),
+    (Join-Path $sourceRoot 'app/src/main/java/com/bggg/watchman/routing/RoutePlanningPolicy.kt'),
+    (Join-Path $sourceRoot 'app/src/test/java/com/bggg/watchman/NoCamsObstaclePlannerSmoke.kt'),
+    (Join-Path $sourceRoot 'app/src/test/java/com/bggg/watchman/RouteProximityIndexSmoke.kt'),
     (Join-Path $sourceRoot 'app/src/test/java/com/bggg/watchman/GeocoderEvidenceSmoke.kt'),
     (Join-Path $sourceRoot 'app/src/main/java/com/bggg/watchman/routing/SourceMappedRoadModel.kt'),
     (Join-Path $sourceRoot 'app/src/test/java/com/bggg/watchman/SourceMappedRoadModelSmoke.kt'),

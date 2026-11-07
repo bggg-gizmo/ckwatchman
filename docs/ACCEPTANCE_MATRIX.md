@@ -13,11 +13,13 @@ Required:
 - includes exposure near both endpoints;
 - explores legal side streets/local roads/service roads when they can reduce exposure;
 - selects a zero-exposure reasonable legal route when one exists;
-- otherwise selects the minimum weighted exposure route inside deterministic detour bounds;
+- permits a nonzero encounter only with proof that it is unavoidable, and minimizes remaining exposure inside deterministic detour bounds;
 - does not collapse to a tiny waypoint-shaping search;
 - diagnostics show alternatives actually explored rather than only a scoring pass;
 - preserves one-way, access, barrier and turn legality;
 - preserves selected mode during rerouting.
+
+Strict No Cams publication must reject a nonzero route unless unavoidable exposure is proven. Provider errors, resource limits, partial search and a best observed weighted score are not proof. Longer legal snaking routes remain eligible.
 
 Pass evidence must report route-level behavior, not merely source presence.
 

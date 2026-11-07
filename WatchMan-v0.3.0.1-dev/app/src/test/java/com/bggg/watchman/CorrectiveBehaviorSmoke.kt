@@ -16,6 +16,8 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.RejectedExecutionException
 
 fun main() {
+    routeProximityIndexRegressions()
+    noCamsObstaclePlannerSmoke()
     geocoderEvidenceSmoke()
     sourceMappedRoadModelSmoke()
     fullRoadPlanningBudgetSmoke()

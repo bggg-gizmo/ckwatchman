@@ -2,6 +2,7 @@ package com.bggg.watchman.data
 
 object ProviderConfig {
     const val NOMINATIM_BASE = "https://nominatim.openstreetmap.org"
+    const val OBSTACLE_ROUTING_BASE = "https://valhalla1.openstreetmap.de"
 
     // Two independent OSRM-compatible services. The first is the project demo;
     // the second is the FOSSGIS/OpenStreetMap.de routed-car service.

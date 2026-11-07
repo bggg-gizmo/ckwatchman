@@ -2,6 +2,7 @@ package com.bggg.watchman.storage
 
 import com.bggg.watchman.data.CameraPoi
 import com.bggg.watchman.data.GeoPoint
+import com.bggg.watchman.data.Route
 import com.bggg.watchman.routing.RoadSnapGeometry
 import java.util.Collections
 
@@ -55,6 +56,26 @@ class DeviceSearchRegion(val graphRevision: String, val evidence: String, window
         return result
     }
     companion object {
+        /** Conservative envelope of EVERY returned vertex/segment and original endpoints.
+         * Dateline-spanning geometry deliberately queries all longitudes instead of omitting
+         * the seam. This is a bounded candidate validation query, not full search-area evidence.
+         */
+        fun forOnlineRoute(route: Route, endpoints: List<GeoPoint>, haloMeters: Double): DeviceSearchRegion {
+            require(route.points.isNotEmpty() && haloMeters.isFinite() && haloMeters >= 0.0)
+            val points = route.points + endpoints
+            require(points.all { it.lat.isFinite() && it.lat in -90.0..90.0 && it.lon.isFinite() && it.lon in -180.0..180.0 })
+            val pad = Math.toDegrees(haloMeters / 6_371_000.0) * 1.02
+            val south = (points.minOf { it.lat } - pad).coerceAtLeast(-90.0)
+            val north = (points.maxOf { it.lat } + pad).coerceAtMost(90.0)
+            val scale = kotlin.math.cos(Math.toRadians(maxOf(kotlin.math.abs(south), kotlin.math.abs(north))))
+            val lonPad = if (scale <= 0.0) 180.0 else (pad / scale).coerceAtMost(180.0)
+            val minLon = points.minOf { it.lon }
+            val maxLon = points.maxOf { it.lon }
+            val global = maxLon - minLon > 180.0 || minLon - lonPad < -180.0 || maxLon + lonPad > 180.0
+            return bounds("online-candidate-v1", "Complete candidate geometry plus original endpoints and exposure halo",
+                south, if (global) -180.0 else minLon - lonPad, north, if (global) 180.0 else maxLon + lonPad)
+        }
+
         /** Every feasible searched prefix has original-source length <= the explicit journey
          * bound. Source-path |latitude change| <= length/R. Below either pole, integrating
          * |longitude change| <= length/(R*cos(max absolute latitude)) bounds the unwrapped

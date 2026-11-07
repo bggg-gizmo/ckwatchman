@@ -3,12 +3,15 @@ package com.bggg.watchman
 import com.bggg.watchman.data.CameraPoi
 import com.bggg.watchman.data.CameraType
 import com.bggg.watchman.data.GeoPoint
+import com.bggg.watchman.data.Route
+import com.bggg.watchman.data.SearchResult
 import com.bggg.watchman.storage.DeviceSearchRegion
 import com.bggg.watchman.routing.RoadSnapGeometry
 import com.bggg.watchman.util.Geo
 import kotlin.math.*
 
 fun deviceSearchRegionSmoke() {
+    onlineCandidateRegionSmoke()
     val ordinary = DeviceSearchRegion.bounds("graph-fixture", "Declared whole synthetic graph plus exposure halo",
         -2.0, -3.0, 4.0, 5.0)
     val wrapped = DeviceSearchRegion.bounds("graph-fixture", "Declared antimeridian test search region",
@@ -152,4 +155,49 @@ fun deviceSearchRegionSmoke() {
     reject { DeviceSearchRegion.forSearch("graph", RoadSnapGeometry.Point(0.0, 0.0), 1000, 0, 180.0) }
     reject { DeviceSearchRegion.forSearch("graph", RoadSnapGeometry.Point(0.0, 0.0), 1000, 1000, Double.NaN) }
     println("Full-search-region device contract: 9386 independent window comparisons,$capComparisons independent spherical path/halo cap comparisons,$planarComparisons original-source partial/chord planar exposure comparisons, inclusive bounds/antimeridian/high latitudes/large halos, canonical immutable scope, all declared windows, raw-row budget/no truncation, cancellation and unavailable/out-of-region refusal PASS; actual SQLite/layer/graph-region coverage requires separate Android/provider evidence")
+}
+
+private fun onlineCandidateRegionSmoke() {
+    val points = (0..1000).map { GeoPoint(0.0, it * 0.01) } +
+        (1..1000).map { GeoPoint(it * 0.01, 10.0) }
+    val endpoints = listOf(GeoPoint(-0.0005, -0.0005), GeoPoint(10.0005, 10.0005))
+    val route = Route(points, emptyList(), 0.0, 0.0, SearchResult("SYNTHETIC_DESTINATION", endpoints.last()))
+    val region = DeviceSearchRegion.forOnlineRoute(route, endpoints, 180.0)
+    check(region.windows.size in 2..16)
+    check(!region.contains(GeoPoint(5.0, 5.0))) // Not the entire bent-route rectangle.
+    check(region.queryScope == DeviceSearchRegion.forOnlineRoute(route, endpoints, 180.0).queryScope)
+    var comparisons = 0
+    for ((a, b) in points.zipWithNext()) {
+        for (fraction in listOf(0.0, 0.5, 1.0)) for (angle in listOf(0.0, 90.0, 180.0, 270.0)) {
+            val center = GeoPoint(a.lat + (b.lat - a.lat) * fraction, a.lon + (b.lon - a.lon) * fraction)
+            val radians = Math.toRadians(angle)
+            val lat = center.lat + Math.toDegrees(179.99 * sin(radians) / 6_371_000.0)
+            val lon = center.lon + Math.toDegrees(179.99 * cos(radians) / (6_371_000.0 * cos(Math.toRadians(lat))))
+            val query = GeoPoint(lat, lon)
+            check(Geo.pointToSegmentMeters(query, a, b) <= 180.0)
+            check(region.contains(query)) { "A candidate segment/halo was omitted" }
+            comparisons++
+        }
+    }
+    for (endpoint in endpoints) for (angle in listOf(0.0, 90.0, 180.0, 270.0)) {
+        val radians = Math.toRadians(angle)
+        val lat = endpoint.lat + Math.toDegrees(179.99 * sin(radians) / 6_371_000.0)
+        val lon = endpoint.lon + Math.toDegrees(179.99 * cos(radians) / (6_371_000.0 * cos(Math.toRadians(lat))))
+        check(region.contains(GeoPoint(lat, lon)))
+    }
+    val sparse = route.copy(points = listOf(points.first(), points.last()))
+    check(DeviceSearchRegion.forOnlineRoute(sparse, endpoints, 180.0).contains(GeoPoint(5.0, 5.0)))
+    val identical = route.copy(points = List(100) { GeoPoint(0.0, 0.0) })
+    check(DeviceSearchRegion.forOnlineRoute(identical, emptyList(), 180.0).contains(GeoPoint(0.0, 0.001)))
+    for (latitude in listOf(-89.999, 0.0, 89.999)) {
+        val seam = route.copy(points = listOf(GeoPoint(latitude, 179.99), GeoPoint(latitude, -179.99)))
+        val window = DeviceSearchRegion.forOnlineRoute(seam, emptyList(), 180.0)
+        check(window.contains(GeoPoint(latitude, 180.0)) && window.contains(GeoPoint(latitude, -180.0)))
+    }
+    var checks = 0
+    check(runCatching { DeviceSearchRegion.forOnlineRoute(route, endpoints, 180.0) {
+        if (++checks == 4) error("CANCELLED_WINDOW_PREPARATION")
+    } }.exceptionOrNull()?.message == "CANCELLED_WINDOW_PREPARATION")
+    check(checks == 4)
+    println("Online candidate region: $comparisons segment/halo comparisons, endpoint disks, bounded windows, empty interior, sparse/seam/polar/zero-length/cancellation PASS")
 }

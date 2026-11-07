@@ -41,7 +41,18 @@ object HttpClient {
         timeoutMs: Int = 12_000,
         maxBytes: Int = 2 * 1024 * 1024,
         accept: String = "application/octet-stream"
-    ): ByteArray {
+    ): ByteArray = requestBytes(url, "GET", null, timeoutMs, maxBytes, accept, emptyMap())
+
+    /** Metadata responses are bounded while streaming, not after a large String allocation. */
+    fun postJsonBytes(url: String, body: String, timeoutMs: Int, maxBytes: Int = 2 * 1024 * 1024,
+        headers: Map<String, String> = emptyMap()): ByteArray {
+        val bytes = body.toByteArray(StandardCharsets.UTF_8)
+        require(bytes.size <= 2 * 1024 * 1024) { "JSON request exceeds metadata processing budget" }
+        return requestBytes(url, "POST", bytes, timeoutMs, maxBytes, "application/json", headers)
+    }
+
+    private fun requestBytes(url: String, method: String, body: ByteArray?, timeoutMs: Int,
+        maxBytes: Int, accept: String, headers: Map<String, String>): ByteArray {
         if (Thread.currentThread().isInterrupted) throw IOException("Network request interrupted")
         val boundedMax = maxBytes.coerceIn(1_024, 8 * 1024 * 1024)
         val deadline = OperationDeadline(timeoutMs.coerceIn(1_000, 60_000).toLong())
@@ -49,12 +60,19 @@ object HttpClient {
         val connection = URL(url).openConnection() as HttpURLConnection
         connection.connectTimeout = deadline.socketTimeoutMillis()
         connection.readTimeout = deadline.socketTimeoutMillis()
-        connection.requestMethod = "GET"
+        connection.requestMethod = method
         connection.setRequestProperty("User-Agent", ProviderConfig.USER_AGENT)
         connection.setRequestProperty("Accept", accept)
+        headers.forEach { (key, value) -> connection.setRequestProperty(key, value) }
         connection.instanceFollowRedirects = true
         val watchdog = deadlineScheduler.schedule({ connection.disconnect() }, remaining, TimeUnit.MILLISECONDS)
         try {
+            if (body != null) {
+                connection.doOutput = true
+                connection.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+                connection.setFixedLengthStreamingMode(body.size)
+                connection.outputStream.use { it.write(body) }
+            }
             val code = connection.responseCode
             val contentLength = connection.contentLengthLong
             if (contentLength > boundedMax) throw IOException("Binary response is too large ($contentLength bytes)")

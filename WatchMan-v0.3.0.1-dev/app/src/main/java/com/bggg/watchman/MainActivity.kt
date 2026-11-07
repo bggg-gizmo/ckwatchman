@@ -1431,7 +1431,7 @@ class MainActivity : Activity() {
 
     private fun noCamsDeviceSnapshot(route: Route, origin: GeoPoint, cancelled: () -> Boolean): RoutingDeviceSnapshot {
         val region = DeviceSearchRegion.forOnlineRoute(route, listOf(origin, route.destination.point),
-            ROUTE_CAMERA_CORRIDOR_METERS)
+            ROUTE_CAMERA_CORRIDOR_METERS) { check(!cancelled()) { "No Cams query preparation cancelled or deadline reached" } }
         return deviceRepository.withinRegion(region, maximumRowsPerLayer = 50_000, cancelled = cancelled)
             .freezeForRouting(region.queryScope)
     }

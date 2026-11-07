@@ -38,6 +38,8 @@ User clarification, 2026-11-06: **No Cams is strict.** Route around every known 
 
 The suggested No Cams Scenic option is a separate future design idea. It does not relax this requirement or change the existing five-mode UI.
 
+User clarification, 2026-11-07: retain devices within 180 m for awareness, while trying verified affected-road/direction coverage to determine rerouting/snaking encounters. A nearby device on a different road must not automatically block that road when source evidence establishes its affected roads. Unknown coverage remains conservative. Preserve the complete device population and accepted weights; label nearby-device counts separately from routed encounters. This is a requirement change to implement and validate, not evidence that source-road association already works.
+
 ### Full Cams / Most Cams
 
 Actively search through as many meaningful known camera/sensor encounters as possible within explicit reasonable-detour limits.

@@ -68,6 +68,28 @@ class RouteProximityIndex(
         return Geo.pointToSegmentMeters(query, a, b) <= corridorMeters
     }
 
+    /** All exact hits, not only the nearest segment. Parallel roads, bends and repeated
+     * approaches must all be represented when assessing affected-road metadata.
+     */
+    fun withinSegments(point: GeoPoint): List<Int> {
+        checkActive()
+        require(point.lat.isFinite() && point.lat in -90.0..90.0 && point.lon.isFinite() && point.lon in -180.0..180.0)
+        val result = HashSet<Int>()
+        for (shift in -1..1) {
+            val candidates = cells[cellKey(cellIndex(point.lat), cellIndex(point.lon+shift*360.0))] ?: continue
+            for ((i, segment) in candidates.withIndex()) {
+                if (i % 64 == 0) checkActive()
+                if (withinSegment(point, segment)) result += segment
+            }
+        }
+        for ((i, segment) in exactSegments.withIndex()) {
+            if (i % 64 == 0) checkActive()
+            if (withinSegment(point, segment)) result += segment
+        }
+        checkActive()
+        return result.sorted()
+    }
+
     private fun indexSegment(segmentIndex: Int) {
         val a = points[segmentIndex]
         val b = points[segmentIndex + 1]

@@ -15,6 +15,8 @@ import kotlin.math.*
  * a loopback server, without sending fixture coordinates to a public provider.
  */
 fun main() {
+    roadAwareExposureSmoke()
+    roadAwarenessJsonSmoke()
     cameraExclusionUnionSmoke()
     val origin = GeoPoint(0.0, 0.0)
     val destination = SearchResult("DESTINATION_FIXTURE", GeoPoint(0.0, 0.02))
@@ -122,6 +124,16 @@ fun main() {
     }.isFailure)
     val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
     var received = false
+    server.createContext("/bounded-json") { exchange ->
+        try {
+            check(exchange.requestMethod == "POST")
+            check(exchange.requestHeaders.getFirst("Content-Type").startsWith("application/json"))
+            check(JSONObject(exchange.requestBody.bufferedReader().use { it.readText() }).getBoolean("fixture"))
+            val bytes = if (exchange.requestHeaders.getFirst("X-Fixture-Large") == "true") ByteArray(2048) else "{\"ok\":true}".toByteArray()
+            exchange.sendResponseHeaders(200, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        } finally { exchange.close() }
+    }
     server.createContext("/route") { exchange ->
         try {
             check(exchange.requestMethod == "POST")
@@ -140,6 +152,11 @@ fun main() {
         val actual = ValhallaObstacleRoutingProvider("http://127.0.0.1:${server.address.port}")
             .route(origin, destination, listOf(camera), 4500)
         check(received && actual == decoded)
+        val url = "http://127.0.0.1:${server.address.port}/bounded-json"
+        check(JSONObject(String(HttpClient.postJsonBytes(url,"{\"fixture\":true}",2000,1024),Charsets.UTF_8)).getBoolean("ok"))
+        check(runCatching { HttpClient.postJsonBytes(url,"{\"fixture\":true}",2000,1024,
+            mapOf("X-Fixture-Large" to "true")) }.isFailure)
+        check(runCatching { HttpClient.postJsonBytes(url,"x".repeat(2*1024*1024+1),2000) }.isFailure)
     } finally { server.stop(0) }
     println("Obstacle adapter: polygon coverage/budget, legal options, HTTP JSON/header transport, OSRM geometry/maneuver/lane decoding PASS")
 }

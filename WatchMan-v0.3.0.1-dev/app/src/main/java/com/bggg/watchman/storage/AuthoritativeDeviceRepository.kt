@@ -1,6 +1,5 @@
 package com.bggg.watchman.storage
 
-import com.bggg.watchman.cameras.CameraClassifier
 import com.bggg.watchman.data.CameraPoi
 import com.bggg.watchman.data.GeoPoint
 import com.bggg.watchman.data.Route
@@ -102,37 +101,11 @@ class AuthoritativeDeviceRepository(
                 layer.forEach { incoming ->
                     val key = DeviceIdentity.logicalKey(incoming)
                     val existing = merged[key]
-                    merged[key] = if (existing == null) incoming else enrich(existing, incoming)
+                    merged[key] = if (existing == null) incoming else DeviceRecordMerge.enrich(existing, incoming)
                 }
             }
             return merged.values.toList()
         }
 
-        private fun enrich(first: CameraPoi, second: CameraPoi): CameraPoi {
-            val firstPriority = CameraClassifier.priority(first.type) * 100 + first.confidence
-            val secondPriority = CameraClassifier.priority(second.type) * 100 + second.confidence
-            val preferred = if (secondPriority > firstPriority) second else first
-            val other = if (preferred === first) second else first
-            return preferred.copy(
-                name = preferred.name ?: other.name,
-                road = preferred.road ?: other.road,
-                direction = preferred.direction ?: other.direction,
-                operator = preferred.operator ?: other.operator,
-                manufacturer = preferred.manufacturer ?: other.manufacturer,
-                sourceUrl = preferred.sourceUrl ?: other.sourceUrl,
-                sourceRecordId = preferred.sourceRecordId ?: other.sourceRecordId,
-                confidence = maxOf(preferred.confidence, other.confidence),
-                tags = LinkedHashMap<String, String>().apply {
-                    putAll(other.tags)
-                    putAll(preferred.tags)
-                    val observedSources = (listOf(first.sourceId, second.sourceId) +
-                        first.tags["watchman:merged_sources"].orEmpty().split(",") +
-                        second.tags["watchman:merged_sources"].orEmpty().split(","))
-                        .filter { it.isNotBlank() }.distinct().sorted()
-                    put("watchman:merged_sources", observedSources.joinToString(","))
-                },
-                lastUpdatedMillis = maxOf(preferred.lastUpdatedMillis, other.lastUpdatedMillis)
-            )
-        }
     }
 }

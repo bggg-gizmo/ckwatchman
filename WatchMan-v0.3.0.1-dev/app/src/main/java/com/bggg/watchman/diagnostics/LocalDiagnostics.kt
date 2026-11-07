@@ -48,7 +48,8 @@ class LocalDiagnostics(context: Context) {
         val error: String? = null,
         val obstacleRoadRequests: Int = 0,
         val obstacleExcludedDevices: Int = 0,
-        val obstacleSnapshotRevision: String? = null
+        val obstacleSnapshotRevision: String? = null,
+        val obstacleAttributionRequests: Int = 0
     )
 
     data class ProximityState(
@@ -93,6 +94,7 @@ class LocalDiagnostics(context: Context) {
             .put("shapedAttempts", record.shapedAttempts)
             .put("shapedRoutes", record.shapedRoutes)
             .put("obstacleRoadRequests", record.obstacleRoadRequests)
+            .put("obstacleAttributionRequests", record.obstacleAttributionRequests)
             .put("obstacleExcludedDevices", record.obstacleExcludedDevices)
             .putNullable("obstacleSnapshotRevision", record.obstacleSnapshotRevision)
             .put("rawCandidates", record.rawCandidates)

@@ -9,6 +9,18 @@ import com.bggg.watchman.util.Geo
  * Off-route recovery stays with the existing GPS hysteresis rather than this cache event.
  */
 object NoCamsRouteMonitor {
+    data class Decision(val obstacleAhead: Boolean, val coverageUnknown: Boolean)
+
+    /** Expired/missing ordinary-signal attribution is uncertainty, not proof of a new
+     * encounter on the locked path. Warn/refresh rather than replacing exact guidance.
+     * Actual affected-road hits and other device families still request strict diversion.
+     */
+    fun decision(assessment: RoadAwareExposure.Assessment): Decision {
+        val verified=assessment.roadEncounters.mapTo(HashSet()) { it.device }
+        val uncertain=assessment.encounters.filter { RoadAwareExposure.mayUseRoadCoverage(it) && it !in verified }
+        return Decision(assessment.encounters.size>uncertain.size,uncertain.isNotEmpty())
+    }
+
     fun remainingRoute(route: Route, position: GeoPoint, checkActive: () -> Unit = {}): Route? {
         val projection = Geo.projectOntoRoute(position, route.points, checkActive) ?: return null
         if (projection.distanceToRouteMeters > 90.0) return null

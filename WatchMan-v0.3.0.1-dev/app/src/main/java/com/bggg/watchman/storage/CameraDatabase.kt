@@ -157,12 +157,39 @@ class CameraDatabase(context: Context) : SQLiteOpenHelper(context, "watchman.db"
         }
     }
 
-    private fun insertAll(db: SQLiteDatabase, items: List<CameraPoi>) {
+    /** Add observations without replacing stronger previously known sensor evidence.
+     * The source key is retained, no source snapshot is cleared, and cancellation rolls
+     * back both records and routing-index writes together. Does not award setup credit.
+     */
+    @Synchronized
+    fun upsertObservations(items: List<CameraPoi>, checkActive: () -> Unit = {}) {
+        if(items.isEmpty()) return
+        require(items.size<=12000)
+        checkActive()
+        val db=writableDatabase
+        db.beginTransaction()
+        try {
+            val merged=items.map { incoming ->
+                checkActive()
+                val previous=db.rawQuery("SELECT $selectColumns FROM cameras WHERE cache_key=? LIMIT 1",
+                    arrayOf(cacheKey(incoming))).use { if(it.moveToFirst()) readCamera(it,strictMetadata=true) else null }
+                if(previous==null) incoming else DeviceRecordMerge.enrich(previous,incoming)
+            }
+            val routing=RoutingCacheIndex.beforeWrite(db)
+            insertAll(db,merged,checkActive)
+            RoutingCacheIndex.afterWrite(db,"cameras",routing)
+            checkActive()
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
+    }
+
+    private fun insertAll(db: SQLiteDatabase, items: List<CameraPoi>, checkActive: () -> Unit = {}) {
         if (items.isEmpty()) return
         val statement = db.compileStatement(
             "INSERT OR REPLACE INTO cameras(cache_key,id,type,lat,lon,name,road,direction,operator,manufacturer,source_name,source_id,source_url,source_record_id,confidence,tags_json,last_updated) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
         )
         items.forEach { p ->
+            checkActive()
             statement.clearBindings()
             statement.bindString(1, cacheKey(p))
             statement.bindString(2, p.id)

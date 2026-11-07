@@ -377,6 +377,19 @@ fun main() {
         analyticsPeriodLabel = "Last 30 days · exact"
     )
     check(ExportWorkflowContext.decode(exactPreviewWorkflow.encode()) == exactPreviewWorkflow)
+    val routedSummary=com.bggg.watchman.data.RoutedDeviceExposure(0,0,1000L,2000L,"a".repeat(64))
+    val routedWorkflow=exactPreviewWorkflow.copy(previewRoutes=exactPreviewWorkflow.previewRoutes.map {
+        it.copy(routedExposure=routedSummary)
+    })
+    check(ExportWorkflowContext.decode(routedWorkflow.encode())==routedWorkflow)
+    // Existing v2 exact-route workflows remain readable without inventing road coverage.
+    val legacyV2=exactPreviewWorkflow.encode().split('.').toMutableList().also { fields ->
+        fields[0]="2"
+        fields[4]=fields[4].split('~').joinToString("~") { it.substringBeforeLast(',') }
+    }.joinToString(".")
+    check(ExportWorkflowContext.decode(legacyV2)==exactPreviewWorkflow)
+    check(runCatching { routedSummary.copy(conservativeEncounters=1) }.isFailure)
+    check(runCatching { routedSummary.copy(validUntilMillis=1000L) }.isFailure)
     ExportWorkflowOrigin.values().forEach { origin ->
         val workflow = ExportWorkflowContext(ExportArtifactType.GENERIC, origin, routeState = "route-$origin")
         check(ExportWorkflowContext.decode(workflow.encode()) == workflow)

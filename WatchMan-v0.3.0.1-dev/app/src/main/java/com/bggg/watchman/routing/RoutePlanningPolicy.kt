@@ -2,6 +2,7 @@ package com.bggg.watchman.routing
 
 import com.bggg.watchman.data.RoutePreference
 import com.bggg.watchman.data.CameraPoi
+import com.bggg.watchman.data.RouteAnalysis
 
 /** Deterministic wall-clock and literal camera-mode acceptance rules. */
 object RoutePlanningPolicy {
@@ -22,6 +23,16 @@ object RoutePlanningPolicy {
         require(count >= EXPOSURE_PENDING)
         return if (count == EXPOSURE_PENDING) "Camera/sensor counts pending"
             else "$count known cam" + if (count == 1) "" else "s"
+    }
+
+    fun exposureLabel(analysis: RouteAnalysis, nowMillis: Long = System.currentTimeMillis()): String {
+        if(analysis.knownCameraCount == EXPOSURE_PENDING) return exposureLabel(EXPOSURE_PENDING)
+        val nearby="${analysis.knownCameraCount} nearby cameras/sensors"
+        val exposure=analysis.routedExposure ?: return nearby
+        if(nowMillis < exposure.assessedAtMillis ||
+            exposure.validUntilMillis?.let { nowMillis >= it } == true) return "$nearby · road check expired"
+        return "$nearby · ${exposure.encounters} routed encounters" +
+            if(exposure.conservativeEncounters>0) " (${exposure.conservativeEncounters} conservative)" else ""
     }
 
     fun isCameraSensitive(preference: RoutePreference): Boolean =

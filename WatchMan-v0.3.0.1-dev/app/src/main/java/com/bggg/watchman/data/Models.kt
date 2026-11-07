@@ -93,8 +93,21 @@ enum class RoutePreference(val label: String, val description: String) {
 data class RouteAnalysis(
     val route: Route,
     val knownCameraCount: Int,
-    val scenicScore: Double
+    val scenicScore: Double,
+    /** Observed routing assessment, separate from the full nearby-awareness population.
+     * This display record is not a reusable route/access/unavoidability certificate.
+     */
+    val routedExposure: RoutedDeviceExposure? = null
 )
+
+data class RoutedDeviceExposure(val encounters: Int, val conservativeEncounters: Int,
+    val assessedAtMillis: Long, val validUntilMillis: Long?, val snapshotRevision: String) {
+    init {
+        require(encounters >= 0 && conservativeEncounters in 0..encounters && assessedAtMillis >= 0)
+        require(validUntilMillis == null || (validUntilMillis > assessedAtMillis && validUntilMillis-assessedAtMillis<=3600000))
+        require(snapshotRevision.matches(Regex("[0-9a-f]{64}")))
+    }
+}
 
 data class ScenicFeature(
     val id: String,

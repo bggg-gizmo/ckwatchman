@@ -18,16 +18,24 @@ class NoCamsObstaclePlanner(
     private val router: (GeoPoint, SearchResult, Exclusions, Long) -> Route,
     private val readDevices: (Route) -> RoutingDeviceSnapshot,
     private val acquire: (Route, Long) -> Unit = { _, _ -> },
-    private val now: () -> Long = { System.nanoTime() / 1_000_000L }
+    private val now: () -> Long = { System.nanoTime() / 1_000_000L },
+    private val readRoadCoverage: (Route, RoutingDeviceSnapshot, Long, () -> Unit) -> RoadAwareExposure.Observation? =
+        { _, _, _, _ -> null },
+    private val wallTime: () -> Long = System::currentTimeMillis
 ) {
-    data class Exclusions(val devices: List<CameraPoi>, val encounteredRoadPoints: List<GeoPoint>)
+    data class Exclusions(val devices: List<CameraPoi>, val encounteredRoadPoints: List<GeoPoint>,
+        val totalDevices: Int = devices.size)
     data class Planned(val route: Route, val snapshot: RoutingDeviceSnapshot,
-        val requests: Int, val excludedDevices: Int)
+        val requests: Int, val excludedDevices: Int, val coverage: RoadAwareExposure.Verified?,
+        val assessment: RoadAwareExposure.Assessment, val attributionRequests: Int = 0)
 
     fun plan(origin: GeoPoint, destination: SearchResult, startedAt: Long = now(),
         cancelled: () -> Boolean = { false }): Planned {
         val obstacles = LinkedHashMap<String, CameraPoi>()
+        val areaObstacles = LinkedHashMap<String, CameraPoi>()
         val blockedRoads = LinkedHashMap<Pair<Long, Long>, GeoPoint>()
+        var routeRequests = 0
+        var attributionRequests = 0
         var baseline: Route? = null
         fun remaining(): Long {
             check(!cancelled() && !Thread.currentThread().isInterrupted) { "No Cams planning cancelled" }
@@ -37,8 +45,16 @@ class NoCamsObstaclePlanner(
             }
             return RoutePlanningPolicy.HARD_DEADLINE_MS - elapsed
         }
-        repeat(MAX_REQUESTS) { attempt ->
-            val route = router(origin, destination, Exclusions(obstacles.values.toList(), blockedRoads.values.toList()), remaining())
+        fun claimRequest(attribution: Boolean) {
+            remaining()
+            check(routeRequests + attributionRequests < MAX_REQUESTS) {
+                "No Cams road search exhausted its bounded requests; zero exposure is not established"
+            }
+            if (attribution) attributionRequests++ else routeRequests++
+        }
+        repeat(MAX_REQUESTS) {
+            claimRequest(false)
+            val route = router(origin, destination, Exclusions(areaObstacles.values.toList(), blockedRoads.values.toList(),obstacles.size), remaining())
                 .copy(requestedOrigin = origin)
             remaining()
             validateRoute(route, origin, destination)
@@ -53,40 +69,58 @@ class NoCamsObstaclePlanner(
                 route.durationSeconds <= maxOf(initial.durationSeconds * 3.0, initial.durationSeconds + 1_800.0)) {
                 "No Cams detour exceeds the explicit distance/time bounds"
             }
-            fun encounters(snapshot: RoutingDeviceSnapshot): List<CameraPoi> {
-                val proximity = RouteProximityIndex(route, snapshot.corridorMeters) { remaining(); Unit }
-                return snapshot.entries.filter { remaining(); it.weight > 0 && (proximity.isWithin(it.device.point) ||
-                    Geo.distanceMeters(origin, it.device.point) <= snapshot.corridorMeters ||
-                    Geo.distanceMeters(destination.point, it.device.point) <= snapshot.corridorMeters) }.map { it.device }
-            }
             var snapshot = readDevices(route)
             remaining()
-            var hits = encounters(snapshot)
-            if (hits.isEmpty()) {
+            val source = readRoadCoverage(route, snapshot, minOf(10_000L, (remaining()-2_000L).coerceAtLeast(0L))) {
+                claimRequest(true)
+            }
+            remaining()
+            val coverage = source?.let { RoadAwareExposure.verify(route, it, wallTime()) { remaining(); Unit } }
+            // Source reads may have additively acquired new devices. Observe the caches again.
+            snapshot = readDevices(route)
+            fun assess() = RoadAwareExposure.assess(route, snapshot, coverage, wallTime()) { remaining(); Unit }
+            var assessment = assess()
+            if (assessment.weightedExposure == 0L) {
                 // Re-read after analysis: acquisition may have committed while the route was checked.
                 snapshot = readDevices(route)
                 remaining()
-                hits = encounters(snapshot)
-                if (hits.isEmpty()) return Planned(route, snapshot, attempt + 1, obstacles.size)
+                assessment = assess()
+                if (assessment.weightedExposure == 0L) return Planned(route, snapshot, routeRequests,
+                    obstacles.size, coverage, assessment, attributionRequests)
             }
             // Keep all known exclusions accumulated across detours. Never truncate to a few clusters.
             var changed = false
-            for (camera in hits) {
+            val roadEncounters = assessment.roadEncounters.associateBy { DeviceIdentity.logicalKey(it.device) }
+            val proximity = RouteProximityIndex(route, snapshot.corridorMeters) { remaining(); Unit }
+            for (camera in assessment.encounters) {
                 remaining()
                 val key = DeviceIdentity.logicalKey(camera)
                 if (obstacles[key] != camera) { obstacles[key] = camera; changed = true }
-                // Exclude the encountered road, not whichever parallel road is nearest the camera.
-                val projection = Geo.projectOntoRoute(camera.point, route.points) { remaining(); Unit }
-                    ?: error("Encountered road could not be projected")
-                remaining()
-                val a = route.points[projection.segmentIndex]
-                val b = route.points[projection.segmentIndex + 1]
-                val length = Geo.distanceMeters(a, b)
-                val inset = if (length > 0.0) minOf(0.5, 5.0 / length) else 0.0
-                val fraction = projection.fraction.coerceIn(inset, 1.0 - inset)
-                val point = GeoPoint(a.lat + (b.lat - a.lat) * fraction, a.lon + (b.lon - a.lon) * fraction)
-                val roadKey = Math.round(point.lat * 1e7) to Math.round(point.lon * 1e7)
-                if (blockedRoads.putIfAbsent(roadKey, point) == null) changed = true
+                val affected = roadEncounters[key]?.segmentIndices
+                if (affected == null && areaObstacles[key] != camera) {
+                    areaObstacles[key] = camera; changed = true
+                }
+                // Verified source membership blocks only affected candidate roads. Unknown
+                // coverage retains the complete area AND every nearby candidate segment.
+                val segments = RoadAwareExposure.blockingSegments(route,camera,
+                    affected ?: proximity.withinSegments(camera.point),coverage,wallTime()) { remaining(); Unit }
+                val blockSegments = segments.ifEmpty {
+                    listOf(checkNotNull(Geo.projectOntoRoute(camera.point, route.points) { remaining(); Unit }).segmentIndex)
+                }
+                for (segment in blockSegments) {
+                    val a = route.points[segment]
+                    val b = route.points[segment + 1]
+                    val projection = Geo.projectOntoRoute(camera.point, listOf(a, b)) { remaining(); Unit }
+                        ?: error("Encountered road could not be projected")
+                    remaining()
+                    val length = Geo.distanceMeters(a, b)
+                    val inset = if (length > 0.0) minOf(0.5, 5.0 / length) else 0.0
+                    val fraction = projection.fraction.coerceIn(inset, 1.0 - inset)
+                    val point = GeoPoint(a.lat + (b.lat - a.lat) * fraction, a.lon + (b.lon - a.lon) * fraction)
+                    val roadKey = Math.round(point.lat * 1e7) to Math.round(point.lon * 1e7)
+                    if (blockedRoads.putIfAbsent(roadKey, point) == null) changed = true
+                    check(blockedRoads.size <= MAX_ROAD_BLOCKS) { "No Cams encountered-road exclusion budget exceeded" }
+                }
             }
             check(changed) { "Road provider still crosses excluded devices; no camera-crossing fallback published" }
             check(obstacles.size <= MAX_OBSTACLES) {
@@ -113,7 +147,7 @@ class NoCamsObstaclePlanner(
     companion object {
         const val MAX_OBSTACLES = 512 // Client work bound; wire geometry has separate backend budgets.
         const val MAX_ROAD_BLOCKS = 128
-        const val MAX_REQUESTS = 8 // Network/fair-use bound, not a limit on inspected devices or route length.
+        const val MAX_REQUESTS = 8 // Shared route + exact-attribution network bound, not an encounter/length limit.
         const val MAX_ROUTE_POINTS = 250_000
         const val MAX_ENDPOINT_SNAP_METERS = 100.0
     }

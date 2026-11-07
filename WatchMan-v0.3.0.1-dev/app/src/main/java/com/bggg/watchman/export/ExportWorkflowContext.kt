@@ -2,6 +2,7 @@ package com.bggg.watchman.export
 
 import java.nio.charset.StandardCharsets
 import java.util.Base64
+import com.bggg.watchman.data.RoutedDeviceExposure
 
 enum class DirectionsExportMode {
     SELECTED_ROUTE,
@@ -42,7 +43,8 @@ data class PreviewRouteWorkflowState(
     /** ActiveRouteStateCodec output. Kept opaque here so the codec remains host-testable. */
     val routeState: String,
     val knownCameraCount: Int,
-    val scenicScore: Double
+    val scenicScore: Double,
+    val routedExposure: RoutedDeviceExposure? = null
 )
 
 /**
@@ -70,7 +72,10 @@ data class ExportWorkflowContext(
         origin.name,
         encodeNullable(routeState),
         previewRoutes.joinToString("~") { preview ->
-            "${encodeRequired(preview.routeState)},${preview.knownCameraCount},${java.lang.Double.doubleToLongBits(preview.scenicScore)}"
+            val exposure=preview.routedExposure?.let {
+                "${it.encounters}:${it.conservativeEncounters}:${it.assessedAtMillis}:${it.validUntilMillis ?: NULL_TOKEN}:${it.snapshotRevision}"
+            } ?: NULL_TOKEN
+            "${encodeRequired(preview.routeState)},${preview.knownCameraCount},${java.lang.Double.doubleToLongBits(preview.scenicScore)},$exposure"
         },
         encodeNullable(recommendedRouteIdentity),
         encodeNullable(selectedRouteIdentity),
@@ -80,7 +85,7 @@ data class ExportWorkflowContext(
     ).joinToString(".")
 
     companion object {
-        private const val FORMAT_VERSION = "2"
+        private const val FORMAT_VERSION = "3"
         private const val NULL_TOKEN = "-"
 
         fun generic(): ExportWorkflowContext = ExportWorkflowContext(
@@ -95,14 +100,20 @@ data class ExportWorkflowContext(
 
         private fun decodeV2(value: String): ExportWorkflowContext? = runCatching {
             val fields = value.split('.')
-            require(fields.size == 10 && fields[0] == FORMAT_VERSION)
+            require(fields.size == 10 && fields[0] in setOf("2",FORMAT_VERSION))
             val previews = if (fields[4].isBlank()) emptyList() else fields[4].split('~').map { encoded ->
                 val parts = encoded.split(',')
-                require(parts.size == 3)
+                require(parts.size == if(fields[0]=="2") 3 else 4)
+                val exposure=parts.getOrNull(3)?.takeUnless { it==NULL_TOKEN }?.split(':')?.let {
+                    require(it.size==5)
+                    RoutedDeviceExposure(it[0].toInt(),it[1].toInt(),it[2].toLong(),
+                        it[3].takeUnless { value -> value==NULL_TOKEN }?.toLong(),it[4])
+                }
                 PreviewRouteWorkflowState(
                     routeState = decodeRequired(parts[0]),
                     knownCameraCount = parts[1].toInt(),
-                    scenicScore = java.lang.Double.longBitsToDouble(parts[2].toLong())
+                    scenicScore = java.lang.Double.longBitsToDouble(parts[2].toLong()),
+                    routedExposure = exposure
                 )
             }
             ExportWorkflowContext(

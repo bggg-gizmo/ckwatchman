@@ -16,17 +16,20 @@ $sources = @('data/Models.kt','data/ProviderConfig.kt','util/Geo.kt',
     'routing/RoutePlanningPolicy.kt','routing/NoCamsObstaclePlanner.kt','routing/ValhallaObstacleRoutingProvider.kt','routing/CameraExclusionUnion.kt','routing/RoadExclusionEncoding.kt',
     'routing/RoadAwareExposure.kt','routing/RoadExposureObservationJson.kt',
     'cameras/CameraClassifier.kt',
+    'routing/RoadCoverageSource.kt','routing/RoadSourceDeviceNormalizer.kt','routing/NoCamsRouteMonitor.kt',
     'routing/OsrmRoutingProvider.kt','routing/RouteShaper.kt','routing/RouteGeometry.kt','routing/RouteProximityIndex.kt','routing/RouteAnalyzer.kt',
-    'storage/DeviceIdentity.kt','storage/RoutingDeviceSnapshot.kt','storage/ActiveRouteStateCodec.kt',
+    'storage/DeviceIdentity.kt','storage/DeviceRecordMerge.kt','storage/RoutingDeviceSnapshot.kt','storage/ActiveRouteStateCodec.kt',
     'storage/RouteIdentity.kt','storage/SearchResultEvidenceJson.kt','net/HttpClient.kt','net/OperationDeadline.kt',
     'service/NavigationRuntimePolicy.kt') | ForEach-Object { Join-Path $base $_ }
 $sources += Join-Path $sourceRoot 'app/src/test/java/com/bggg/watchman/ObstacleRoutingAdapterSmoke.kt'
 $sources += Join-Path $sourceRoot 'app/src/test/java/com/bggg/watchman/CameraExclusionUnionSmoke.kt'
 $sources += Join-Path $sourceRoot 'app/src/test/java/com/bggg/watchman/RoadAwarenessJsonSmoke.kt'
 $sources += Join-Path $sourceRoot 'app/src/test/java/com/bggg/watchman/RoadAwareExposureSmoke.kt'
+$sources += Join-Path $sourceRoot 'app/src/test/java/com/bggg/watchman/RoadCoverageSourceSmoke.kt'
+$sources += Join-Path $sourceRoot 'app/src/test/java/com/bggg/watchman/DeviceRecordMergeSmoke.kt'
 $jar = Join-Path $build 'obstacle-tests.jar'
 $classpath = "$kotlin/kotlin-stdlib.jar;$JsonJar"
 & $java "-Xmx${CompilerHeapMiB}m" '-XX:MaxMetaspaceSize=192m' '-XX:ActiveProcessorCount=2' '-cp' "$kotlin/*" org.jetbrains.kotlin.cli.jvm.K2JVMCompiler @sources '-classpath' $classpath '-include-runtime' '-jvm-target' '1.8' '-d' $jar
 if ($LASTEXITCODE -ne 0) { throw 'Obstacle adapter test compilation failed' }
-& $java '-Xmx128m' '-XX:ActiveProcessorCount=2' '-cp' "$jar;$JsonJar" com.bggg.watchman.ObstacleRoutingAdapterSmokeKt
+& $java '-Xmx128m' '-XX:ActiveProcessorCount=2' "-Dwatchman.test.cache.root=$build/cache-fixtures" '-cp' "$jar;$JsonJar" com.bggg.watchman.ObstacleRoutingAdapterSmokeKt
 if ($LASTEXITCODE -ne 0) { throw 'Obstacle adapter tests failed' }

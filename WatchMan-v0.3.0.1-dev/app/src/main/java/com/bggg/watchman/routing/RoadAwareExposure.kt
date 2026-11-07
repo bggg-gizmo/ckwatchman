@@ -4,6 +4,7 @@ import com.bggg.watchman.data.CameraPoi
 import com.bggg.watchman.data.CameraType
 import com.bggg.watchman.data.GeoPoint
 import com.bggg.watchman.data.Route
+import com.bggg.watchman.data.RoutedDeviceExposure
 import com.bggg.watchman.cameras.CameraClassifier
 import com.bggg.watchman.storage.RouteIdentity
 import com.bggg.watchman.storage.RoutingDeviceSnapshot
@@ -47,17 +48,60 @@ object RoadAwareExposure {
         }
     }
     class Verified internal constructor(internal val routeIdentity: String, internal val observation: Observation,
-        wayIds: LongArray, geometryVerified: BooleanArray, parents: Map<Long, Set<Long>>) {
+        wayIds: LongArray, geometryVerified: BooleanArray, edgeGroups: IntArray,
+        parents: Map<Long, Set<Long>>, motorParents: Set<Long>) {
         private val ways = wayIds.copyOf()
         private val matched = geometryVerified.copyOf()
+        private val edges = edgeGroups.copyOf()
         private val parentWays = Collections.unmodifiableMap(parents.mapValues { Collections.unmodifiableSet(HashSet(it.value)) })
+        private val motorConnected = Collections.unmodifiableSet(HashSet(motorParents))
         internal fun wayAt(index: Int) = ways[index]
         internal fun matchedAt(index: Int) = matched[index]
+        internal fun edgeAt(index: Int) = edges[index]
         internal fun parents(node: Long?) = parentWays[node].orEmpty()
+        internal fun hasMotorParent(node: Long?) = node in motorConnected
+        internal fun suffix(identity: String, firstSegment: Int) = Verified(identity, observation,
+            ways.copyOfRange(firstSegment, ways.size), matched.copyOfRange(firstSegment, matched.size),
+            edges.copyOfRange(firstSegment,edges.size),parentWays, motorConnected)
     }
     data class Assessment(val nearbyRelevantDevices: List<CameraPoi>, val encounters: List<CameraPoi>,
         val awarenessOnlyDevices: List<CameraPoi>, val verifiedRoadEncounters: Int, val unknownEncounters: Int,
-        val weightedExposure: Long, val snapshotRevision: String)
+        val weightedExposure: Long, val snapshotRevision: String,
+        val roadEncounters: List<RoadEncounter> = emptyList())
+    /** Only these verified affected segments may replace a conservative device-area blocker. */
+    data class RoadEncounter(val device: CameraPoi, val segmentIndices: List<Int>)
+
+    fun mayUseRoadCoverage(camera: CameraPoi) = camera.type == CameraType.TRAFFIC &&
+        camera.tags["highway"]=="traffic_signals" && camera.manufacturer.isNullOrBlank() && ordinarySignalTags(camera.tags)
+
+    fun isCurrent(route: Route, verified: Verified?, nowMillis: Long) = verified != null &&
+        fresh(verified.observation,nowMillis) && verified.routeIdentity==RouteIdentity.sha256(route)
+
+    fun summary(assessment: Assessment, verified: Verified?, nowMillis: Long) = RoutedDeviceExposure(
+        assessment.encounters.size, assessment.unknownEncounters, nowMillis,
+        verified?.observation?.takeIf { fresh(it,nowMillis) }?.validUntilMillis, assessment.snapshotRevision)
+
+    /** An exact trace span is one provider edge, even if its display geometry contains many
+     * samples. Keep one exclusion location per encountered edge, never merge by OSM way ID:
+     * a single way can cross many graph junctions. This groups constraints, not exposure.
+     * Unknown coverage still keeps the full device area and strict candidate revalidation.
+     */
+    fun blockingSegments(route: Route, device: CameraPoi, segments: List<Int>, verified: Verified?, nowMillis: Long,
+        checkActive: () -> Unit = {}): List<Int> {
+        checkActive()
+        if(!isCurrent(route,verified,nowMillis)) return segments
+        val proof=checkNotNull(verified)
+        val groups=LinkedHashMap<Int,MutableList<Int>>()
+        for(segment in segments) {
+            checkActive()
+            require(segment in 0 until route.points.lastIndex)
+            groups.getOrPut(proof.edgeAt(segment)) { ArrayList() }.add(segment)
+        }
+        return groups.values.map { group -> group.minBy { segment ->
+            Geo.projectOntoRoute(device.point,listOf(route.points[segment],route.points[segment+1]),checkActive)
+                ?.distanceToRouteMeters ?: Double.POSITIVE_INFINITY
+        } }.also { checkActive() }
+    }
 
     /** Source IDs alone are insufficient: exact edge walking must cover every candidate
      * segment and each admitted source way must reproduce its actual geometry. A bad way
@@ -73,27 +117,32 @@ object RoadAwareExposure {
         }
         val ids = LongArray(route.points.lastIndex)
         val matched = BooleanArray(ids.size)
+        val edgeGroups = IntArray(ids.size)
         var covered = 0
-        for (span in observation.spans) {
+        for ((edgeGroup,span) in observation.spans.withIndex()) {
             checkActive()
             if (span.wayId <= 0 || span.first != covered || span.last !in span.first..route.points.lastIndex) return null
             val way = observation.ways[span.wayId]
             val source = way?.nodeIds?.mapNotNull { observation.nodes[it]?.point }
             val good = source != null && source.size == way.nodeIds.size &&
                 sourceMatches(route.points.subList(span.first, span.last+1), source, checkActive)
-            for (i in span.first until span.last) { ids[i] = span.wayId; matched[i] = good }
+            for (i in span.first until span.last) { ids[i] = span.wayId; matched[i] = good; edgeGroups[i]=edgeGroup }
             covered = span.last
         }
         if (covered != route.points.lastIndex) return null
         val parents = HashMap<Long, MutableSet<Long>>()
-        for (way in observation.ways.values) if (way.highway in MOTOR_ROADS) {
+        val motorParents = HashSet<Long>()
+        for (way in observation.ways.values) {
             for ((i, node) in way.nodeIds.withIndex()) {
                 if (i % 128 == 0) checkActive()
-                if (node in observation.completeParentNodeIds) parents.getOrPut(node) { HashSet() } += way.id
+                if (node in observation.completeParentNodeIds) {
+                    parents.getOrPut(node) { HashSet() } += way.id
+                    if (way.highway in MOTOR_ROADS) motorParents += node
+                }
             }
         }
         checkActive()
-        return Verified(RouteIdentity.sha256(route), observation, ids, matched, parents).also { checkActive() }
+        return Verified(RouteIdentity.sha256(route), observation, ids, matched, edgeGroups, parents, motorParents).also { checkActive() }
     }
 
     fun assess(route: Route, snapshot: RoutingDeviceSnapshot, verified: Verified?, nowMillis: Long,
@@ -104,6 +153,7 @@ object RoadAwareExposure {
         val nearby = ArrayList<CameraPoi>()
         val encounters = ArrayList<CameraPoi>()
         val awarenessOnly = ArrayList<CameraPoi>()
+        val roadEncounters = ArrayList<RoadEncounter>()
         var roadCount = 0
         var unknownCount = 0
         var weight = 0L
@@ -114,32 +164,69 @@ object RoadAwareExposure {
                     RouteAnalyzer.overlapsRequestedEndpoint(camera, route, snapshot.corridorMeters))) continue
             nearby += camera
             var roadDecision: Boolean? = null
-            if (proof != null && camera.type == CameraType.TRAFFIC && camera.tags["highway"] == "traffic_signals" &&
-                camera.manufacturer.isNullOrBlank() &&
-                ordinarySignalTags(camera.tags)) {
+            var affectedSegments = emptyList<Int>()
+            if (proof != null && mayUseRoadCoverage(camera)) {
                 val nodeId = camera.sourceRecordId?.takeIf { NODE_ID.matches(it) }?.substringAfter('/')?.toLongOrNull()
                 val node = proof.observation.nodes[nodeId]
                 val parents = proof.parents(nodeId)
-                if (nodeId in proof.observation.completeParentNodeIds && node != null && parents.isNotEmpty() &&
+                if (nodeId in proof.observation.completeParentNodeIds && node != null && proof.hasMotorParent(nodeId) && parents.isNotEmpty() &&
                     node.tags["highway"] == "traffic_signals" && ordinarySignalTags(node.tags) &&
                     Geo.distanceMeters(camera.point, node.point) <= 1.0) {
                     val segments = index.withinSegments(camera.point)
                     if (segments.isNotEmpty() && segments.all { proof.matchedAt(it) }) {
-                        if (segments.any { proof.wayAt(it) in parents }) roadDecision = true
+                        affectedSegments = segments.filter { proof.wayAt(it) in parents }
+                        if (affectedSegments.isNotEmpty()) roadDecision = true
                         else if (separateParentGeometry(camera.point, route, segments, parents, proof.observation,
                                 snapshot.corridorMeters, checkActive)) roadDecision = false
                     }
                 }
             }
+            // Source road attribution says nothing about an unobserved connector from a
+            // geocoded facility point to the snapped road. Never exempt that endpoint area.
+            if (RouteAnalyzer.overlapsRequestedEndpoint(camera, route, snapshot.corridorMeters) &&
+                ((route.requestedOrigin?.let { Geo.distanceMeters(it, camera.point) <= snapshot.corridorMeters &&
+                    Geo.distanceMeters(it, route.points.first()) > 1.0 } == true) ||
+                    (Geo.distanceMeters(route.destination.point, camera.point) <= snapshot.corridorMeters &&
+                        Geo.distanceMeters(route.destination.point, route.points.last()) > 1.0))) roadDecision = null
             if (roadDecision == false) awarenessOnly += camera else {
                 encounters += camera
                 weight = Math.addExact(weight, entry.weight)
-                if (roadDecision == true) roadCount++ else unknownCount++
+                if (roadDecision == true) {
+                    roadCount++
+                    roadEncounters += RoadEncounter(camera, Collections.unmodifiableList(ArrayList(affectedSegments)))
+                } else unknownCount++
             }
         }
         checkActive()
         return Assessment(Collections.unmodifiableList(nearby), Collections.unmodifiableList(encounters),
-            Collections.unmodifiableList(awarenessOnly), roadCount, unknownCount, weight, snapshot.revision)
+            Collections.unmodifiableList(awarenessOnly), roadCount, unknownCount, weight, snapshot.revision,
+            Collections.unmodifiableList(roadEncounters))
+    }
+
+    /** Rebind only an exact remaining suffix of this route. Never copy edge indices onto
+     * an unrelated replanned/shortened geometry or refresh the source receipt's lifetime.
+     */
+    fun remainingCoverage(original: Route, remaining: Route, verified: Verified?, nowMillis: Long,
+        checkActive: () -> Unit = {}): Verified? {
+        checkActive()
+        val proof = verified ?: return null
+        if (!fresh(proof.observation, nowMillis) || proof.routeIdentity != RouteIdentity.sha256(original) ||
+            remaining.destination != original.destination || remaining.provider != original.provider ||
+            remaining.points.size !in 2..original.points.size) return null
+        val first = original.points.size - remaining.points.size
+        for (i in 1 until remaining.points.size) {
+            if(i%128==0) checkActive()
+            if(remaining.points[i] != original.points[first+i]) return null
+        }
+        val sourceSegment = listOf(original.points[first], original.points[first+1])
+        if(abs(sourceSegment[0].lon-sourceSegment[1].lon)>180.0) return null
+        val projection = Geo.projectOntoRoute(remaining.points.first(),sourceSegment,checkActive) ?: return null
+        if(projection.distanceToRouteMeters>0.001) return null
+        remaining.requestedOrigin?.let {
+            if(Geo.distanceMeters(it,remaining.points.first())>90.0) return null
+        }
+        checkActive()
+        return proof.suffix(RouteIdentity.sha256(remaining),first).also { checkActive() }
     }
 
     private fun fresh(source: Observation, now: Long) = now >= source.observedAtMillis && now < source.validUntilMillis

@@ -67,5 +67,5 @@ fun roadAwarenessJsonSmoke() {
     reject { (observation.ways.getValue(100).nodeIds as MutableList<Long>).clear() }
     check(observation.sourceEvidence != decoded(parents=emptySet()).sourceEvidence)
     reject { RoadExposureObservationJson.decode(trace.toString(),source.toString(),setOf(12),1000,2000) { error("CANCELLED") } }
-    println("Road awareness source decoder: GeoJSON/polyline6, exact numeric identities, malformed/partial/false-claim/receipt binding, immutable records and cancellation PASS; not app integration")
+    println("Road awareness source decoder: GeoJSON/polyline6, exact numeric identities, malformed/partial/false-claim/receipt binding, immutable records and cancellation PASS; host evidence, not Android acceptance")
 }

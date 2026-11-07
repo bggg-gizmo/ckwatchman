@@ -11,6 +11,7 @@ import com.bggg.watchman.data.CameraType
 import com.bggg.watchman.data.GeoPoint
 import com.bggg.watchman.data.Route
 import com.bggg.watchman.data.RoutePreference
+import com.bggg.watchman.data.RoutedDeviceExposure
 import com.bggg.watchman.history.RouteHistoryEntry
 import com.bggg.watchman.util.Geo
 import com.bggg.watchman.ui.MapDeviceDeclutter
@@ -27,12 +28,13 @@ data class RouteExportSelection(
     val originName: String,
     val origin: GeoPoint,
     val preference: RoutePreference,
-    /** Cameras/sensors actually relevant to the narrow traveled route corridor. */
+    /** Complete nearby-awareness population in the traveled route corridor. */
     val cameras: List<CameraPoi>,
     val selected: Boolean,
     val label: String,
     /** Broader regional devices available to the rendered map viewport. */
-    val mapCameras: List<CameraPoi> = cameras
+    val mapCameras: List<CameraPoi> = cameras,
+    val routedExposure: RoutedDeviceExposure? = null
 )
 
 /**
@@ -52,15 +54,21 @@ object DirectionsExporter {
         assets: AssetManager? = null
     ): ByteArray {
         require(selections.isNotEmpty()) { "No route selected for export" }
+        val preparedAt=System.currentTimeMillis()
+        val frozenSelections=selections.map { selection ->
+            val exposure=selection.routedExposure
+            if(exposure!=null && (preparedAt<exposure.assessedAtMillis ||
+                    exposure.validUntilMillis?.let { preparedAt>=it }==true)) selection.copy(routedExposure=null) else selection
+        }
         val pdf = PdfDocument()
         val maps = ExportMapRenderer(tileCacheDirectory, assets)
         var pageNumber = 1
         try {
-            drawCover(pdf, maps, selections, mode, pageNumber++)
+            drawCover(pdf, maps, frozenSelections, mode, pageNumber++)
             if (mode == DirectionsExportMode.ROUTE_COMPARISON) {
-                drawComparisonTable(pdf, maps, selections, pageNumber++)
+                drawComparisonTable(pdf, maps, frozenSelections, pageNumber++)
             } else {
-                selections.forEach { selection ->
+                frozenSelections.forEach { selection ->
                     drawRouteOverview(pdf, maps, selection, pageNumber++)
                     pageNumber = drawSteps(pdf, selection, pageNumber)
                     pageNumber = drawCameras(pdf, selection, pageNumber)
@@ -135,7 +143,7 @@ object DirectionsExporter {
         c.drawText("TO", MARGIN, 140f, h)
         c.drawText(trim(first.route.destination.displayName, 82), MARGIN, 158f, body)
 
-        val mapRect = RectF(MARGIN, 184f, PAGE_W - MARGIN, 482f)
+        val mapRect = RectF(MARGIN, 184f, PAGE_W - MARGIN, 430f)
         val unionCameras = selections.flatMap { selection ->
             MapDeviceDeclutter.select(selection.route, selection.mapCameras, MapDeviceDeclutter.PDF_ROUTE_LIMIT)
         }.distinctBy { "${it.sourceId}:${it.sourceRecordId ?: it.id}" }
@@ -150,20 +158,20 @@ object DirectionsExporter {
             showCameraLabels = false
         )
 
-        var y = 512f
+        var y = 460f
         for ((index, s) in selections.withIndex()) {
             val marker = if (s.selected) "SELECTED" else "ALT ${index + 1}"
             c.drawText("$marker · ${s.label}", MARGIN, y, h)
             c.drawText(
-                "${Geo.distanceText(s.route.distanceMeters)} · ${Geo.etaText(s.route.durationSeconds)} · ${s.cameras.size} route cameras/sensors · ${s.preference.label}",
+                "${Geo.distanceText(s.route.distanceMeters)} · ${Geo.etaText(s.route.durationSeconds)} · ${s.cameras.size} nearby / ${routedCount(s)} routed · ${s.preference.label}",
                 MARGIN, y + 17f, body
             )
-            y += 43f
+            y += 38f
             if (y > 690f) break
         }
 
         drawLegend(c, MARGIN, 708f)
-        footer(c, pageNumber, "Route counts use the travel corridor; map markers use the refreshed regional camera/sensor snapshot.")
+        footer(c, pageNumber, "Nearby includes awareness devices. Routed counts retain conservative unknowns; '-' means not verified.")
         pdf.finishPage(page)
     }
 
@@ -194,14 +202,19 @@ object DirectionsExporter {
         val counts = selection.cameras.groupingBy { it.type }.eachCount().entries.sortedByDescending { it.value }
         var y = 489f
         c.drawText("Turn maneuvers", MARGIN, y, strong); c.drawText(selection.route.steps.size.toString(), MARGIN + 120f, y, body); y += 19f
-        c.drawText("Cameras / sensors", MARGIN, y, strong); c.drawText(selection.cameras.size.toString(), MARGIN + 120f, y, body); y += 23f
+        c.drawText("Nearby devices", MARGIN, y, strong); c.drawText(selection.cameras.size.toString(), MARGIN + 120f, y, body); y += 19f
+        c.drawText("Routed encounters", MARGIN, y, strong); c.drawText(routedCount(selection), MARGIN + 120f, y, body); y += 23f
         counts.take(8).forEach { (type, count) ->
             c.drawCircle(MARGIN + 4f, y - 4f, 3f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = cameraColor(type) })
             c.drawText(type.label, MARGIN + 14f, y, body)
             c.drawText(count.toString(), MARGIN + 210f, y, strong)
             y += 17f
         }
-        c.drawText("The following pages list each maneuver in travel order with a WatchMan maneuver sign and distance.", MARGIN, 666f, body)
+        if(counts.size>8) {
+            c.drawText("Other device categories",MARGIN+14f,y,body)
+            c.drawText(counts.drop(8).sumOf { it.value }.toString(),MARGIN+210f,y,strong)
+        }
+        c.drawText("The following pages list each maneuver in travel order with a WatchMan maneuver sign and distance.", MARGIN, 714f, body)
         footer(c, pageNumber, "Map © OpenStreetMap contributors")
         pdf.finishPage(page)
     }
@@ -266,7 +279,7 @@ object DirectionsExporter {
                     textY += 14f
                 }
                 if (camLines.isNotEmpty()) {
-                    c.drawText("Cameras / sensors before next maneuver", left, textY, bodyPaint().apply { textSize = 8.8f; isFakeBoldText = true; color = Color.rgb(178, 109, 28) })
+                    c.drawText("Nearby cameras / sensors before next maneuver", left, textY, bodyPaint().apply { textSize = 8.8f; isFakeBoldText = true; color = Color.rgb(178, 109, 28) })
                     textY += 13f
                     camLines.forEach { line ->
                         c.drawText(trim("• $line", 72), left, textY, bodyPaint().apply { textSize = 8.4f; color = Color.rgb(91, 69, 42) })
@@ -289,7 +302,7 @@ object DirectionsExporter {
         if (cameras.isEmpty()) {
             val page = pdf.startPage(PdfDocument.PageInfo.Builder(PAGE_W, PAGE_H, pageNumber).create())
             page.canvas.drawColor(Color.WHITE)
-            drawHeader(page.canvas, "Cameras / sensors along route", selection.label)
+            drawHeader(page.canvas, "Nearby cameras / sensors", selection.label)
             page.canvas.drawText("No cached cameras or sensors were found inside the route corridor at export time.", MARGIN, 105f, bodyPaint())
             footer(page.canvas, pageNumber, "Camera coverage depends on available public sources and current cache state.")
             pdf.finishPage(page)
@@ -300,7 +313,7 @@ object DirectionsExporter {
         while (index < cameras.size) {
             val page = pdf.startPage(PdfDocument.PageInfo.Builder(PAGE_W, PAGE_H, pageNumber).create())
             val c = page.canvas; c.drawColor(Color.WHITE)
-            drawHeader(c, "Cameras / sensors along route", "${selection.label} · ordered from route start")
+            drawHeader(c, "Nearby cameras / sensors", "${selection.label} · awareness, ordered from route start")
             var y = 92f
             while (index < cameras.size && y < PAGE_H - 70f) {
                 val cam = cameras[index]
@@ -351,7 +364,7 @@ object DirectionsExporter {
         c.drawText("ROUTE", MARGIN, y, header)
         c.drawText("DISTANCE", 260f, y, header)
         c.drawText("ETA", 350f, y, header)
-        c.drawText("CAMS/SENSORS", 430f, y, header)
+        c.drawText("NEAR / ROUTED", 430f, y, header)
         y += 18f
         selections.forEachIndexed { idx, s ->
             val row = RectF(MARGIN, y - 13f, PAGE_W - MARGIN, y + 18f)
@@ -360,7 +373,7 @@ object DirectionsExporter {
             c.drawText(trim(label, 29), MARGIN + 4f, y + 5f, if (s.selected) header else body)
             c.drawText(Geo.distanceText(s.route.distanceMeters), 260f, y + 5f, body)
             c.drawText(Geo.etaText(s.route.durationSeconds), 350f, y + 5f, body)
-            c.drawText(s.cameras.size.toString(), 453f, y + 5f, body)
+            c.drawText("${s.cameras.size} / ${routedCount(s)}", 440f, y + 5f, body)
             y += 34f
         }
         y += 12f
@@ -375,7 +388,7 @@ object DirectionsExporter {
             }
             y += 17f
         }
-        footer(c, pageNumber, "★ selected route · exposure counts use the travel corridor; the map can show broader regional devices")
+        footer(c, pageNumber, "★ selected · nearby is awareness; routed includes conservative unknowns. '-' is not verified.")
         pdf.finishPage(page)
     }
 
@@ -442,6 +455,11 @@ object DirectionsExporter {
 
     private fun sectionPaint() = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(39, 41, 44); textSize = 15f; isFakeBoldText = true }
     private fun bodyPaint() = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(57, 59, 63); textSize = 10.5f }
+
+    private fun routedCount(selection: RouteExportSelection): String {
+        val exposure=selection.routedExposure ?: return "-"
+        return exposure.encounters.toString()
+    }
 
     private fun cameraColor(type: CameraType): Int = when (type) {
         CameraType.RED_LIGHT -> Color.rgb(194, 49, 45)

@@ -15,6 +15,8 @@ import kotlin.math.*
  * a loopback server, without sending fixture coordinates to a public provider.
  */
 fun main() {
+    deviceRecordMergeSmoke()
+    roadCoverageSourceSmoke()
     roadAwareExposureSmoke()
     roadAwarenessJsonSmoke()
     cameraExclusionUnionSmoke()

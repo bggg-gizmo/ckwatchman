@@ -86,6 +86,10 @@ import com.bggg.watchman.routing.RouteGeometry
 import com.bggg.watchman.routing.RouteShaper
 import com.bggg.watchman.routing.NoCamsObstaclePlanner
 import com.bggg.watchman.routing.NoCamsRouteMonitor
+import com.bggg.watchman.routing.RoadAwareExposure
+import com.bggg.watchman.routing.RoadCoverageSource
+import com.bggg.watchman.routing.RoadSourceDeviceNormalizer
+import com.bggg.watchman.storage.RouteIdentity
 import com.bggg.watchman.routing.ValhallaObstacleRoutingProvider
 import com.bggg.watchman.storage.DeviceSearchRegion
 import com.bggg.watchman.storage.RoutingDeviceSnapshot
@@ -271,17 +275,22 @@ class MainActivity : Activity() {
     private var deviceSnapshotReady = false
     private data class DeviceLayerRequest(val point: GeoPoint?, val route: Route?, val active: Route?, val preview: Route?,
         val checkNoCams: Boolean = false)
-    private data class DeviceLayerResult(val devices: List<CameraPoi>, val obstacleAhead: Boolean)
+    private data class DeviceLayerResult(val devices: List<CameraPoi>, val obstacleAhead: Boolean,
+        val roadCoverageUnknown: Boolean = false)
+    private val roadCoverageSource by lazy { RoadCoverageSource(File(filesDir,"road-coverage")) }
+    private val roadCoverageLock = Any()
+    private val roadCoverage = LinkedHashMap<String,RoadAwareExposure.Verified>(4,0.75f,true)
     private lateinit var deviceLayerWorker: CoalescingWorker<DeviceLayerRequest, DeviceLayerResult>
     private var lastNoCamsCheckAt = 0L
     private data class NationalSourceSummary(val regions: String, val devices: String, val details: List<String>, val failed: Boolean)
     private lateinit var nationalSourceSummaryWorker: CoalescingWorker<LinearLayout, NationalSourceSummary>
     private data class DirectionsDeviceRequest(
         val route: Route, val host: LinearLayout, val summaryPrefix: String,
-        val map: TileMapView, val stepLabels: Map<Int, TextView>
+        val map: TileMapView, val stepLabels: Map<Int, TextView>, val preference: RoutePreference
     )
     private data class DirectionsDevices(
-        val count: Int, val mapCameras: List<CameraPoi>, val stepCameras: Map<Int, List<CameraPoi>>
+        val count: Int, val mapCameras: List<CameraPoi>, val stepCameras: Map<Int, List<CameraPoi>>,
+        val exposureLabel: String
     )
     private lateinit var directionsDeviceWorker: CoalescingWorker<DirectionsDeviceRequest, DirectionsDevices>
     private var latestDeviceLayerRequest: DeviceLayerRequest? = null
@@ -353,11 +362,19 @@ class MainActivity : Activity() {
             val checkActive = { check(!cancelled()) { "No Cams remaining-route check cancelled or deadline reached" } }
             val remaining = if (request.checkNoCams && request.active != null && request.point != null)
                 NoCamsRouteMonitor.remainingRoute(request.active, request.point, checkActive) else null
+            var roadCoverageUnknown = false
             val obstacleAhead = remaining?.let { route ->
                 val snapshot = noCamsDeviceSnapshot(route, checkNotNull(request.point), cancelled)
-                NoCamsRouteMonitor.hasObstacle(route, snapshot, checkActive)
+                val original=checkNotNull(request.active)
+                val originalProof=cachedRoadCoverage(original) ?: readRoadCoverage(original,snapshot,
+                    (2_000L-(monotonicMillis()-checkStarted)).coerceAtLeast(0L),false,cancelled)
+                val proof=RoadAwareExposure.remainingCoverage(original,route,originalProof,System.currentTimeMillis(),checkActive)
+                val assessment=RoadAwareExposure.assess(route,snapshot,proof,System.currentTimeMillis(),checkActive)
+                val checkResult=NoCamsRouteMonitor.decision(assessment)
+                roadCoverageUnknown=checkResult.coverageUnknown
+                checkResult.obstacleAhead
             } ?: false
-            DeviceLayerResult(cameras, obstacleAhead)
+            DeviceLayerResult(cameras, obstacleAhead, roadCoverageUnknown)
         }, ::publishDeviceLayer)
         nationalSourceSummaryWorker = CoalescingWorker(executor, ::postToUi,
             { readNationalSourceSummary() }, ::publishNationalSourceSummary)
@@ -366,8 +383,22 @@ class MainActivity : Activity() {
         routeExposureWorker = CoalescingWorker(executor, ::postToUi, { request ->
             check(Looper.myLooper() != Looper.getMainLooper()) { "Route exposure must load off-main" }
             val cameras = routeCameraCandidates(request.analyses.map { it.route }, requireAvailable = true)
-            request.analyses.map { analysis -> analysis.copy(knownCameraCount =
-                RouteAnalyzer.countKnownCameras(analysis.route, cameras, ROUTE_CAMERA_CORRIDOR_METERS)) }
+            request.analyses.map { analysis ->
+                if(request.preference==RoutePreference.FEWEST_CAMERAS) {
+                    val started=monotonicMillis()
+                    val cancelled={ Thread.currentThread().isInterrupted || monotonicMillis()-started>=2_000L }
+                    val snapshot=noCamsDeviceSnapshot(analysis.route,analysis.route.requestedOrigin ?: analysis.route.points.first(),cancelled)
+                    val proof=cachedRoadCoverage(analysis.route) ?: readRoadCoverage(analysis.route,snapshot,
+                        (2_000L-(monotonicMillis()-started)).coerceAtLeast(0L),false,cancelled)
+                    val assessedAt=System.currentTimeMillis()
+                    val assessed=RoadAwareExposure.assess(analysis.route,snapshot,proof,assessedAt) {
+                        check(!cancelled()) { "No Cams exposure refresh deadline reached" }
+                    }
+                    analysis.copy(knownCameraCount=assessed.nearbyRelevantDevices.size,
+                        routedExposure=RoadAwareExposure.summary(assessed,proof,assessedAt))
+                } else analysis.copy(knownCameraCount =
+                    RouteAnalyzer.countKnownCameras(analysis.route, cameras, ROUTE_CAMERA_CORRIDOR_METERS),routedExposure=null)
+            }
         }, ::publishRouteExposure)
         exportManager = PreparedExportManager(this)
         localDiagnostics = LocalDiagnostics(this)
@@ -1436,6 +1467,54 @@ class MainActivity : Activity() {
             .freezeForRouting(region.queryScope)
     }
 
+    private fun rememberRoadCoverage(route: Route, proof: RoadAwareExposure.Verified) {
+        val identity=RouteIdentity.sha256(route)
+        synchronized(roadCoverageLock) {
+            roadCoverage[identity]=proof
+            while(roadCoverage.size>2) roadCoverage.remove(roadCoverage.keys.first())
+        }
+    }
+
+    private fun cachedRoadCoverage(route: Route): RoadAwareExposure.Verified? {
+        val identity=RouteIdentity.sha256(route)
+        val proof=synchronized(roadCoverageLock) { roadCoverage[identity] } ?: return null
+        return proof.takeIf { RoadAwareExposure.isCurrent(route,it,System.currentTimeMillis()) }
+    }
+
+    private fun readRoadCoverage(route: Route, snapshot: RoutingDeviceSnapshot, remainingMillis: Long,
+        allowNetwork: Boolean, cancelled: () -> Boolean, claimTraceRequest: () -> Unit = {}): RoadAwareExposure.Verified? {
+        check(Looper.myLooper()!=Looper.getMainLooper()) { "Source-road observations must load off-main" }
+        if(remainingMillis<=0L) return null
+        val started=monotonicMillis()
+        val active={ check(!cancelled() && monotonicMillis()-started<remainingMillis) { "Source-road observation deadline reached" } }
+        val result=roadCoverageSource.observe(route,snapshot,remainingMillis,allowNetwork,cancelled,
+            onTraceRequest=claimTraceRequest)
+        active()
+        if(allowNetwork && result.sourceNodes.isNotEmpty()) {
+            val discovered=result.sourceNodes.mapNotNull { receipt -> active(); RoadSourceDeviceNormalizer.normalize(receipt) }
+            // Additive acquisition only. Original individual receipt times are retained;
+            // no setup-completion flag, source clearing or fake regional credit is written.
+            if(discovered.isNotEmpty()) db.upsertObservations(discovered,active)
+        }
+        val observation=result.observation ?: result.attribution ?: return null
+        val proof=RoadAwareExposure.verify(route,observation,System.currentTimeMillis(),active) ?: return null
+        if(result.observation!=null) rememberRoadCoverage(route,proof)
+        return proof
+    }
+
+    private fun cachedRouteExposure(route: Route): com.bggg.watchman.data.RoutedDeviceExposure? = runCatching {
+        val started=monotonicMillis()
+        val cancelled={ Thread.currentThread().isInterrupted || monotonicMillis()-started>=2_000L }
+        val snapshot=noCamsDeviceSnapshot(route,route.requestedOrigin ?: route.points.first(),cancelled)
+        val proof=cachedRoadCoverage(route) ?: readRoadCoverage(route,snapshot,
+            (2_000L-(monotonicMillis()-started)).coerceAtLeast(0L),false,cancelled)
+        val assessedAt=System.currentTimeMillis()
+        val assessment=RoadAwareExposure.assess(route,snapshot,proof,assessedAt) {
+            check(!cancelled()) { "Cached routed-exposure deadline reached" }
+        }
+        RoadAwareExposure.summary(assessment,proof,assessedAt)
+    }.getOrNull()
+
     private fun nearbyCameraCandidates(point: GeoPoint): List<CameraPoi> {
         return deviceRepository.nearby(point, CAMERA_CACHE_RADIUS_METERS).devices
     }
@@ -1480,6 +1559,10 @@ class MainActivity : Activity() {
                 if (currentRoute != null) NavigationForegroundService.submitActivityLocation(location, snapshot)
             }
             val active = currentRoute
+            if(layer.roadCoverageUnknown && active!=null && activeRoutePreference==RoutePreference.FEWEST_CAMERAS) {
+                statusText.text="No Cams road coverage needs refresh"
+                lastRoutePlanningNotice="Nearby devices remain visible. Affected-road coverage is unavailable or expired; the exact route is retained and zero exposure is not reconfirmed."
+            }
             if (layer.obstacleAhead && active != null && activeRoutePreference == RoutePreference.FEWEST_CAMERAS &&
                 !routePlanningInFlight && System.currentTimeMillis() - lastRerouteAt > REROUTE_MIN_INTERVAL_MS) {
                 lastRerouteAt = System.currentTimeMillis()
@@ -2085,6 +2168,7 @@ class MainActivity : Activity() {
             var priorityCoverageStatuses: List<CameraSourceStatus> = emptyList()
             var obstaclePlan: NoCamsObstaclePlanner.Planned? = null
             var obstacleRoadRequestCount = 0
+            var obstacleAttributionRequestCount = 0
             var obstacleExcludedDeviceCount = 0
 
             fun markPlanningPhase(name: String) {
@@ -2134,7 +2218,8 @@ class MainActivity : Activity() {
                         error = error,
                         obstacleRoadRequests = obstacleRoadRequestCount,
                         obstacleExcludedDevices = obstacleExcludedDeviceCount,
-                        obstacleSnapshotRevision = obstaclePlan?.snapshot?.revision
+                        obstacleSnapshotRevision = obstaclePlan?.snapshot?.revision,
+                        obstacleAttributionRequests = obstacleAttributionRequestCount
                     )
                 )
             }
@@ -2175,7 +2260,7 @@ class MainActivity : Activity() {
                     val planner = NoCamsObstaclePlanner(
                         router = { from, to, exclusions, remaining ->
                             obstacleRoadRequestCount++
-                            obstacleExcludedDeviceCount = exclusions.devices.size
+                            obstacleExcludedDeviceCount = exclusions.totalDevices
                             try { roadProvider.route(from, to, exclusions, remaining) }
                             finally { markPlanningPhase("obstacleRoad$obstacleRoadRequestCount") }
                         },
@@ -2188,9 +2273,16 @@ class MainActivity : Activity() {
                                     .onFailure { priorityCoverageFailure = it.message ?: it.javaClass.simpleName }
                             }
                         },
-                        now = ::monotonicMillis
+                        now = ::monotonicMillis,
+                        readRoadCoverage = { route,snapshot,remaining,claim ->
+                            readRoadCoverage(route,snapshot,remaining,true,cancelled) {
+                                claim(); obstacleAttributionRequestCount++
+                            }?.observation
+                        }
                     )
-                    val planned = planner.plan(origin, destination, planningStartedAt, cancelled)
+                    val roadPriority=acquisitionPriority.acquire(AcquisitionPriorityCoordinator.Work.ROUTE_CORRIDOR)
+                    val planned = try { planner.plan(origin, destination, planningStartedAt, cancelled) }
+                        finally { roadPriority.close() }
                     obstaclePlan = planned
                     listOf(planned.route)
                 } else routingProvider.routes(origin, destination, ROUTE_ALTERNATIVE_REQUEST_COUNT)
@@ -2257,9 +2349,10 @@ class MainActivity : Activity() {
                 rawCandidateCount = baselineRoutes.size + shapedRoutes.size
                 val measuredCandidates = RouteGeometry.deduplicate(baselineRoutes + shapedRoutes)
                 deduplicatedCandidateCount = measuredCandidates.size
+                var publicationSnapshot: RoutingDeviceSnapshot? = null
                 val routeCameras = RoutePlanningPolicy.cameraSnapshotBeforePublication(preference) {
                     if (preference == RoutePreference.FEWEST_CAMERAS) {
-                        noCamsDeviceSnapshot(baselineRoutes.single(), origin, cancelled).entries.map { it.device }
+                        noCamsDeviceSnapshot(baselineRoutes.single(), origin, cancelled).also { publicationSnapshot=it }.entries.map { it.device }
                     } else routeCameraCandidates(measuredCandidates, requireAvailable = true)
                 }
                 candidateDeviceCount = routeCameras.size
@@ -2281,26 +2374,35 @@ class MainActivity : Activity() {
                     .mapIndexed { index, route -> route.copy(alternativeIndex = index) }
                 finalCandidateCount = routes.size
                 val analyses = routes.map { route ->
+                    val assessedAt=System.currentTimeMillis()
+                    val roadAssessment=if(preference==RoutePreference.FEWEST_CAMERAS) {
+                        RoadAwareExposure.assess(route,checkNotNull(publicationSnapshot),obstaclePlan?.coverage,assessedAt) {
+                            check(!cancelled()) { "No Cams final validation deadline reached" }
+                        }
+                    } else null
                     RouteAnalysis(
                         route = route,
-                        knownCameraCount = if (!cameraSensitive) RoutePlanningPolicy.EXPOSURE_PENDING else RouteAnalyzer.countKnownCameras(
+                        knownCameraCount = roadAssessment?.nearbyRelevantDevices?.size ?: if (!cameraSensitive) RoutePlanningPolicy.EXPOSURE_PENDING else RouteAnalyzer.countKnownCameras(
                             route,
                             routeCameras,
                             ROUTE_CAMERA_CORRIDOR_METERS
                         ),
-                        scenicScore = 0.0
+                        scenicScore = 0.0,
+                        routedExposure=roadAssessment?.let { RoadAwareExposure.summary(it,obstaclePlan?.coverage,assessedAt) }
                     )
                 }
                 exposureCounts = analyses.map { it.knownCameraCount }
                 val selected = RouteScorer.select(preference, analyses)
                 if (preference == RoutePreference.FEWEST_CAMERAS) {
-                    check(selected.knownCameraCount == 0 && !cancelled()) {
+                    val exposure=checkNotNull(selected.routedExposure)
+                    check(exposure.encounters == 0 && !cancelled() &&
+                        exposure.validUntilMillis?.let { System.currentTimeMillis()<it } != false) {
                         "New device data or deadline changed during No Cams validation; please retry"
                     }
                 }
                 selectedDiagnosticRoute = selected.route
                 val fallbackNotice = if (preference == RoutePreference.FEWEST_CAMERAS) {
-                    "No known encounters in current device caches. Unacquired or unmapped devices remain unknown."
+                    "No routed encounters in the checked device caches. Nearby awareness devices remain visible; unacquired, unmapped or expired coverage remains unknown."
                 } else RoutePlanningPolicy.cameraFallbackMessage(
                     preference,
                     shapingCameras.size,
@@ -2707,7 +2809,7 @@ class MainActivity : Activity() {
                     append("Route ${index + 1} · ${Geo.etaText(analysis.route.durationSeconds)} · ${distanceMiles(analysis.route.distanceMeters)}")
                 }
                 val detail = buildString {
-                    append(RoutePlanningPolicy.exposureLabel(analysis.knownCameraCount))
+                    append(RoutePlanningPolicy.exposureLabel(analysis))
                     append(" · ${routeCoverageShortLabel()}")
                     if (preference == RoutePreference.SCENIC) append(" · scenic ${String.format(Locale.US, "%.1f", analysis.scenicScore)}")
                 }
@@ -2789,7 +2891,7 @@ class MainActivity : Activity() {
         lastRouteAnalyses = updated
         updated.forEach { analysis ->
             routePreviewCameraLabels[analysis.route]?.takeIf { it.isAttachedToWindow }?.text = buildString {
-                append(RoutePlanningPolicy.exposureLabel(analysis.knownCameraCount))
+                append(RoutePlanningPolicy.exposureLabel(analysis))
                 append(" · ${routeCoverageShortLabel()}")
                 if (request.preference == RoutePreference.SCENIC)
                     append(" · scenic ${String.format(Locale.US, "%.1f", analysis.scenicScore)}")
@@ -3589,7 +3691,7 @@ class MainActivity : Activity() {
                     }
                 )
             }
-            request = DirectionsDeviceRequest(route, deviceHost, summaryPrefix, miniMap, stepLabels)
+            request = DirectionsDeviceRequest(route, deviceHost, summaryPrefix, miniMap, stepLabels,preference)
         }
         // Request after attachment: executor rejection must also produce a visible retry state.
         directionsDeviceWorker.request(request)
@@ -3598,16 +3700,19 @@ class MainActivity : Activity() {
     private fun readDirectionsDevices(request: DirectionsDeviceRequest): DirectionsDevices {
         check(Looper.myLooper() != Looper.getMainLooper()) { "Directions devices must load off-main" }
         val route = request.route
-        val corridor = routeCameraCandidates(listOf(route)).sortedBy {
+        val corridor = routeCameraCandidates(listOf(route),requireAvailable=true).sortedBy {
             Geo.projectOntoRoute(it.point, route.points)?.distanceAlongMeters ?: Double.MAX_VALUE
         }
         val nearby = runCatching {
             deviceRepository.alongRoutes(listOf(route), DIRECTIONS_MAP_CAMERA_RADIUS_METERS,
                 includeRegional = true).devices
         }.getOrDefault(corridor)
+        val routed=if(request.preference==RoutePreference.FEWEST_CAMERAS) cachedRouteExposure(route) else null
+        val exposureLabel=RoutePlanningPolicy.exposureLabel(RouteAnalysis(route,corridor.size,0.0,routed)) +
+            if(request.preference==RoutePreference.FEWEST_CAMERAS && routed==null) " · routed check unavailable" else ""
         return DirectionsDevices(corridor.size,
             MapDeviceDeclutter.select(route, nearby, MapDeviceDeclutter.INTERACTIVE_ROUTE_LIMIT),
-            request.stepLabels.keys.associateWith { camerasForStep(route, it, corridor) })
+            request.stepLabels.keys.associateWith { camerasForStep(route, it, corridor) },exposureLabel)
     }
 
     private fun publishDirectionsDevices(request: DirectionsDeviceRequest, result: Result<DirectionsDevices>) {
@@ -3625,7 +3730,7 @@ class MainActivity : Activity() {
             }
             return
         }
-        addMenuText(request.host, "${request.summaryPrefix} · ${devices.count} cameras/sensors along route")
+        addMenuText(request.host, "${request.summaryPrefix} · ${devices.exposureLabel}")
         request.map.setCameras(devices.mapCameras)
         request.stepLabels.forEach { (index, label) ->
             val cameras = devices.stepCameras[index].orEmpty()
@@ -3634,7 +3739,7 @@ class MainActivity : Activity() {
                 it.name?.takeIf(String::isNotBlank) ?: it.type.label
             }
             val suffix = if (cameras.size > DIRECTIONS_MAX_CAMERAS_PER_STEP) " · +${cameras.size - DIRECTIONS_MAX_CAMERAS_PER_STEP} more" else ""
-            label.text = "Cameras / sensors before next maneuver: $line$suffix"
+            label.text = "Nearby cameras / sensors before next maneuver: $line$suffix"
         }
     }
 
@@ -3900,7 +4005,8 @@ class MainActivity : Activity() {
             PreviewRouteWorkflowState(
                 routeState = encodeWorkflowRoute(analysis.route, origin, preference),
                 knownCameraCount = analysis.knownCameraCount,
-                scenicScore = analysis.scenicScore
+                scenicScore = analysis.scenicScore,
+                routedExposure = analysis.routedExposure
             )
         },
         recommendedRouteIdentity = ActiveRouteStateCodec.routeIdentity(recommended.route),
@@ -3984,7 +4090,8 @@ class MainActivity : Activity() {
                         cameras = routeCameras,
                         selected = route === selectedRoute,
                         label = "Route ${index + 1}${if (route === selectedRoute) " · selected" else ""}",
-                        mapCameras = mapCameras
+                        mapCameras = mapCameras,
+                        routedExposure = if(preference==RoutePreference.FEWEST_CAMERAS) cachedRouteExposure(route) else null
                     )
                 }
                 postToUi { statusText.text = "Rendering directions PDF…" }
@@ -4216,7 +4323,8 @@ class MainActivity : Activity() {
                             cameras = routeCameras,
                             selected = true,
                             label = "Saved route",
-                            mapCameras = mapCameras
+                            mapCameras = mapCameras,
+                            routedExposure = if(entry.preference==RoutePreference.FEWEST_CAMERAS) cachedRouteExposure(route) else null
                         )
                     ),
                     DirectionsExportMode.SELECTED_ROUTE,
@@ -4438,19 +4546,19 @@ class MainActivity : Activity() {
         if (storedSelectedIdentity.isNotBlank() && storedSelectedIdentity != selectedIdentity) return null
         val decoded = workflow.previewRoutes.mapNotNull { stored ->
             ActiveRouteStateCodec.decode(stored.routeState)?.let { state ->
-                Triple(state, stored.knownCameraCount, stored.scenicScore)
+                state to stored
             }
         }
         if (decoded.isEmpty()) {
             return RestoredPreviewWorkflow(
-                analyses = listOf(RouteAnalysis(selectedState.route, 0, 0.0)),
+                analyses = listOf(RouteAnalysis(selectedState.route, RoutePlanningPolicy.EXPOSURE_PENDING, 0.0)),
                 recommendedIndex = 0,
                 selectedIndex = 0,
                 preference = selectedState.preference,
                 origin = selectedState.origin
             )
         }
-        val analyses = decoded.map { (state, count, scenic) -> RouteAnalysis(state.route, count, scenic) }
+        val analyses = decoded.map { (state, stored) -> RouteAnalysis(state.route, stored.knownCameraCount, stored.scenicScore,stored.routedExposure) }
         val identities = analyses.map { ActiveRouteStateCodec.routeIdentity(it.route) }
         val selectedIndex = RouteContextPolicy.exactSingleIndex(identities, selectedIdentity) ?: return null
         val recommendedIndex = RouteContextPolicy.exactSingleIndex(identities, workflow.recommendedRouteIdentity.orEmpty())

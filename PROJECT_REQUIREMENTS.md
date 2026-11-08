@@ -90,6 +90,8 @@ All routing modes must preserve:
 
 Endpoint camera/sensor encounters count.
 
+User clarification,2026-11-07: for typed addresses whose geocoder point is beside the road, use a **verified lawful vehicle approach serving that address**, retaining the original address marker for awareness. No Cams must still verify device exposure on that approach and the entire driving path. This permits source-backed approach binding; it does not authorize arbitrary snapping, guessed access/private permission, dropping device records, or nonzero exposure without proof of unavoidability.
+
 ## 4. Exact route locking and recovery
 
 The exact selected route must persist across Activity lifecycle changes, foreground-service recovery, and navigation restoration.

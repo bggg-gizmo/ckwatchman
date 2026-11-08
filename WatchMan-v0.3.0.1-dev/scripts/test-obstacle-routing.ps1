@@ -15,6 +15,8 @@ $base = Join-Path $sourceRoot 'app/src/main/java/com/bggg/watchman'
 $sources = @('data/Models.kt','data/ProviderConfig.kt','util/Geo.kt',
     'routing/RoutePlanningPolicy.kt','routing/NoCamsObstaclePlanner.kt','routing/ValhallaObstacleRoutingProvider.kt','routing/CameraExclusionUnion.kt','routing/RoadExclusionEncoding.kt',
     'routing/RoadAwareExposure.kt','routing/RoadExposureObservationJson.kt',
+    'routing/VerifiedVehicleApproach.kt','routing/MotorcarRoadProfile.kt','routing/MotorcarTagPolicy.kt',
+    'routing/VehicleLimitPolicy.kt','routing/ConditionalRestriction.kt','routing/RestrictionCondition.kt',
     'cameras/CameraClassifier.kt',
     'routing/RoadCoverageSource.kt','routing/RoadSourceDeviceNormalizer.kt','routing/NoCamsRouteMonitor.kt',
     'routing/OsrmRoutingProvider.kt','routing/RouteShaper.kt','routing/RouteGeometry.kt','routing/RouteProximityIndex.kt','routing/RouteAnalyzer.kt',
@@ -27,6 +29,7 @@ $sources += Join-Path $sourceRoot 'app/src/test/java/com/bggg/watchman/RoadAware
 $sources += Join-Path $sourceRoot 'app/src/test/java/com/bggg/watchman/RoadAwareExposureSmoke.kt'
 $sources += Join-Path $sourceRoot 'app/src/test/java/com/bggg/watchman/RoadCoverageSourceSmoke.kt'
 $sources += Join-Path $sourceRoot 'app/src/test/java/com/bggg/watchman/DeviceRecordMergeSmoke.kt'
+$sources += Join-Path $sourceRoot 'app/src/test/java/com/bggg/watchman/VehicleApproachSmoke.kt'
 $jar = Join-Path $build 'obstacle-tests.jar'
 $classpath = "$kotlin/kotlin-stdlib.jar;$JsonJar"
 & $java "-Xmx${CompilerHeapMiB}m" '-XX:MaxMetaspaceSize=192m' '-XX:ActiveProcessorCount=2' '-cp' "$kotlin/*" org.jetbrains.kotlin.cli.jvm.K2JVMCompiler @sources '-classpath' $classpath '-include-runtime' '-jvm-target' '1.8' '-d' $jar

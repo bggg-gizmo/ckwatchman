@@ -92,6 +92,10 @@ class NoCamsObstaclePlanner(
             var changed = false
             val roadEncounters = assessment.roadEncounters.associateBy { DeviceIdentity.logicalKey(it.device) }
             val proximity = RouteProximityIndex(route, snapshot.corridorMeters) { remaining(); Unit }
+            // Several devices can affect the same provider edge. One location blocks that
+            // edge; retain ALL device records/areas and all prior detour constraints.
+            // Group IDs belong only to this exact candidate's verified trace frame.
+            val candidateEdges = HashSet<Int>()
             for (camera in assessment.encounters) {
                 remaining()
                 val key = DeviceIdentity.logicalKey(camera)
@@ -108,6 +112,10 @@ class NoCamsObstaclePlanner(
                     listOf(checkNotNull(Geo.projectOntoRoute(camera.point, route.points) { remaining(); Unit }).segmentIndex)
                 }
                 for (segment in blockSegments) {
+                    val observedAt=wallTime()
+                    val edge=coverage?.takeIf { observedAt>=it.observation.observedAtMillis &&
+                        observedAt<it.observation.validUntilMillis }?.edgeAt(segment)
+                    if(edge!=null && !candidateEdges.add(edge)) continue
                     val a = route.points[segment]
                     val b = route.points[segment + 1]
                     val projection = Geo.projectOntoRoute(camera.point, listOf(a, b)) { remaining(); Unit }

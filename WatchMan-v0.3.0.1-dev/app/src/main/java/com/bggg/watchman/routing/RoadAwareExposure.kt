@@ -5,6 +5,7 @@ import com.bggg.watchman.data.CameraType
 import com.bggg.watchman.data.GeoPoint
 import com.bggg.watchman.data.Route
 import com.bggg.watchman.data.RoutedDeviceExposure
+import com.bggg.watchman.data.SearchResult
 import com.bggg.watchman.cameras.CameraClassifier
 import com.bggg.watchman.storage.RouteIdentity
 import com.bggg.watchman.storage.RoutingDeviceSnapshot
@@ -23,15 +24,19 @@ object RoadAwareExposure {
         init { require(id > 0 && valid(point) && tags.size <= 4096 &&
             tags.entries.sumOf { it.key.length.toLong()+it.value.length } <= 131072) }
     }
-    class Way(val id: Long, nodeIds: List<Long>, val highway: String?) {
+    class Way(val id: Long, nodeIds: List<Long>, val highway: String?, tags: Map<String,String> = emptyMap()) {
         val nodeIds: List<Long> = Collections.unmodifiableList(ArrayList(nodeIds))
+        val tags: Map<String,String> = Collections.unmodifiableMap(LinkedHashMap(tags))
         init { require(id > 0 && nodeIds.size in 2..100000 && nodeIds.all { it > 0 } &&
-            (highway == null || highway.length in 1..256)) }
+            (highway == null || highway.length in 1..256) && tags.size<=4096 &&
+            tags.entries.sumOf { it.key.length.toLong()+it.value.length }<=131072 &&
+            (tags["highway"]==null || tags["highway"]==highway)) }
     }
     data class Span(val wayId: Long, val first: Int, val last: Int)
     class Observation(shape: List<GeoPoint>, spans: List<Span>, nodes: Collection<Node>, ways: Collection<Way>,
         completeParentNodeIds: Set<Long>, val sourceEvidence: String,
-        val observedAtMillis: Long, val validUntilMillis: Long) {
+        val observedAtMillis: Long, val validUntilMillis: Long,
+        val requestedOrigin: SearchResult? = null) {
         val shape: List<GeoPoint> = Collections.unmodifiableList(ArrayList(shape))
         val spans: List<Span> = Collections.unmodifiableList(ArrayList(spans))
         val nodes: Map<Long, Node> = Collections.unmodifiableMap(nodes.associateBy { it.id })
@@ -40,16 +45,20 @@ object RoadAwareExposure {
         init {
             require(shape.size in 2..250000 && shape.all(::valid) && spans.size in 1..100000)
             require(nodes.size <= 20000 && ways.size <= 2048 && this.nodes.size == nodes.size && this.ways.size == ways.size)
-            require(nodes.sumOf { n -> n.tags.entries.sumOf { it.key.length.toLong()+it.value.length } } <= 8000000)
+            require(nodes.sumOf { n -> n.tags.entries.sumOf { it.key.length.toLong()+it.value.length } } +
+                ways.sumOf { w -> w.tags.entries.sumOf { it.key.length.toLong()+it.value.length } } <= 8000000)
             require(ways.sumOf { it.nodeIds.size.toLong() } <= 200000)
             require(completeParentNodeIds.size <= 512 && completeParentNodeIds.all { it > 0 })
             require(sourceEvidence.isNotBlank() && sourceEvidence.length <= 4096)
             require(observedAtMillis >= 0 && validUntilMillis > observedAtMillis && validUntilMillis-observedAtMillis <= 3600000)
+            require(requestedOrigin==null || (requestedOrigin.displayName.isNotBlank() &&
+                requestedOrigin.displayName.length<=8192 && valid(requestedOrigin.point)))
         }
     }
     class Verified internal constructor(internal val routeIdentity: String, internal val observation: Observation,
         wayIds: LongArray, geometryVerified: BooleanArray, edgeGroups: IntArray,
-        parents: Map<Long, Set<Long>>, motorParents: Set<Long>) {
+        parents: Map<Long, Set<Long>>, motorParents: Set<Long>,
+        val originApproach: VerifiedVehicleApproach? = null, val destinationApproach: VerifiedVehicleApproach? = null) {
         private val ways = wayIds.copyOf()
         private val matched = geometryVerified.copyOf()
         private val edges = edgeGroups.copyOf()
@@ -62,7 +71,8 @@ object RoadAwareExposure {
         internal fun hasMotorParent(node: Long?) = node in motorConnected
         internal fun suffix(identity: String, firstSegment: Int) = Verified(identity, observation,
             ways.copyOfRange(firstSegment, ways.size), matched.copyOfRange(firstSegment, matched.size),
-            edges.copyOfRange(firstSegment,edges.size),parentWays, motorConnected)
+            edges.copyOfRange(firstSegment,edges.size),parentWays, motorConnected,
+            originApproach=null,destinationApproach=destinationApproach)
     }
     data class Assessment(val nearbyRelevantDevices: List<CameraPoi>, val encounters: List<CameraPoi>,
         val awarenessOnlyDevices: List<CameraPoi>, val verifiedRoadEncounters: Int, val unknownEncounters: Int,
@@ -76,6 +86,12 @@ object RoadAwareExposure {
 
     fun isCurrent(route: Route, verified: Verified?, nowMillis: Long) = verified != null &&
         fresh(verified.observation,nowMillis) && verified.routeIdentity==RouteIdentity.sha256(route)
+
+    /** Attach the actual request observation, not a statement that an approach is legal. */
+    fun withOrigin(source: Observation, origin: SearchResult?): Observation =
+        if(source.requestedOrigin==origin) source else Observation(source.shape,source.spans,source.nodes.values,
+            source.ways.values,source.completeParentNodeIds,source.sourceEvidence,source.observedAtMillis,
+            source.validUntilMillis,origin)
 
     fun summary(assessment: Assessment, verified: Verified?, nowMillis: Long) = RoutedDeviceExposure(
         assessment.encounters.size, assessment.unknownEncounters, nowMillis,
@@ -142,7 +158,10 @@ object RoadAwareExposure {
             }
         }
         checkActive()
-        return Verified(RouteIdentity.sha256(route), observation, ids, matched, edgeGroups, parents, motorParents).also { checkActive() }
+        val originApproach=VerifiedVehicleApproach.resolve(route,observation,observation.requestedOrigin,true,matched,nowMillis,checkActive)
+        val destinationApproach=VerifiedVehicleApproach.resolve(route,observation,route.destination,false,matched,nowMillis,checkActive)
+        return Verified(RouteIdentity.sha256(route), observation, ids, matched, edgeGroups, parents, motorParents,
+            originApproach,destinationApproach).also { checkActive() }
     }
 
     fun assess(route: Route, snapshot: RoutingDeviceSnapshot, verified: Verified?, nowMillis: Long,
@@ -165,6 +184,17 @@ object RoadAwareExposure {
             nearby += camera
             var roadDecision: Boolean? = null
             var affectedSegments = emptyList<Int>()
+            val originOverlap=route.requestedOrigin?.let { Geo.distanceMeters(it,camera.point)<=snapshot.corridorMeters }==true
+            val destinationOverlap=route.requestedOrigin!=null &&
+                Geo.distanceMeters(route.destination.point,camera.point)<=snapshot.corridorMeters
+            val originBound=proof?.originApproach?.let { it.original.point==route.requestedOrigin &&
+                Geo.distanceMeters(it.point,route.points.first())<=1.0 }==true
+            val destinationBound=proof?.destinationApproach?.let { it.original==route.destination &&
+                Geo.distanceMeters(it.point,route.points.last())<=1.0 }==true
+            if(!index.isWithin(camera.point) && (!originOverlap || originBound) && (!destinationOverlap || destinationBound)) {
+                awarenessOnly+=camera
+                continue
+            }
             if (proof != null && mayUseRoadCoverage(camera)) {
                 val nodeId = camera.sourceRecordId?.takeIf { NODE_ID.matches(it) }?.substringAfter('/')?.toLongOrNull()
                 val node = proof.observation.nodes[nodeId]
@@ -184,10 +214,10 @@ object RoadAwareExposure {
             // Source road attribution says nothing about an unobserved connector from a
             // geocoded facility point to the snapped road. Never exempt that endpoint area.
             if (RouteAnalyzer.overlapsRequestedEndpoint(camera, route, snapshot.corridorMeters) &&
-                ((route.requestedOrigin?.let { Geo.distanceMeters(it, camera.point) <= snapshot.corridorMeters &&
-                    Geo.distanceMeters(it, route.points.first()) > 1.0 } == true) ||
-                    (Geo.distanceMeters(route.destination.point, camera.point) <= snapshot.corridorMeters &&
-                        Geo.distanceMeters(route.destination.point, route.points.last()) > 1.0))) roadDecision = null
+                ((originOverlap && !originBound && route.requestedOrigin?.let {
+                    Geo.distanceMeters(it,route.points.first())>1.0 }==true) ||
+                    (destinationOverlap && !destinationBound &&
+                        Geo.distanceMeters(route.destination.point,route.points.last())>1.0))) roadDecision = null
             if (roadDecision == false) awarenessOnly += camera else {
                 encounters += camera
                 weight = Math.addExact(weight, entry.weight)

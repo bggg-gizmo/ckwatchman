@@ -1,6 +1,12 @@
-# Development status — 2026-11-07
+# Development status — 2026-11-08
 
 Current corrective target remains v0.3.0.1 / code 31. Source identity is still v0.3.0 / code 30 while acceptance gates remain open. No final corrective APK has been produced by this change.
+
+Latest work after checkpoint`01e7911`: cross-device exact-edge constraint deduplication and a source-bound public-street vehicle-approach verifier. The user explicitly approved verified lawful approaches for typed addresses while retaining original-marker awareness and checking every driving-path device. Targeted and complete corrective host suites pass. The complete current app passed offline Android36 `compileReleaseKotlin` and `lintVitalRelease` in3m33s (23tasks: four executed,19up-to-date). The real case now verifies both approaches, but subsequent routing still fails to establish zero exposure. No endpoint exception or release acceptance is claimed; the strict online planner remains zero-only.
+
+The approach verifier combines reparsed original geocoder records with fresh actual source-road identity, immutable complete geometry, unique projection, actual route direction and the existing passenger-road/node access policy. Display-name equality is not an access or identity requirement: differing labels must not override a matching actual source ID. Private, destination/customer-only, unresolved conditional/vehicle-limit/barrier, ambiguous and shifted bindings refuse. It does not certify parking, a private/facility entrance, every possible approach, whole-route legality or unavoidable exposure. [Nominatim's output documentation](https://nominatim.org/release-docs/latest/api/Output/) explains that interpolated house records can reference a street or interpolation way; a `house` label is not proof of a building or vehicle entrance.
+
+The November8 private live check refreshed expired receipts and executed the production planner/source verifier with the actual app seed parser. Both lawful street approaches verified. Its first candidate retained20nearby devices as ten road encounters, six conservative unknowns and four awareness-only devices; an actual detour retained17nearby as ten road encounters, five unknowns and two awareness-only devices. The run used three road, one attribution and23small metadata requests in16.946s before backend`NoRoute`. Status remains **INCOMPLETE**. Unknown crossing contexts and strict graph-search/unavoidability gates remain open; counts were not reduced by suppressing taxonomy, records or weights.
 
 Latest user rule: No Cams is strict. Longer legal snaking paths are required when needed; nonzero exposure needs proof of unavoidability. A weighted best-observed route is not a strict-mode pass. The suggested No Cams Scenic option remains a separate, unspecified future idea.
 
@@ -26,7 +32,7 @@ Preview/directions/PDF labels separate nearby awareness from routed encounters a
 
 Remaining-route attribution is derived only from an exact validated suffix of the selected route, retaining original receipt expiry and edge indexing. Cache-only reconstruction preserves the selected geometry. Missing/expired ordinary-signal attribution warns that coverage needs refresh; it is not treated as proof of a new camera and does not silently substitute another route. Actual verified affected-road encounters and other conservative device families retain mode-preserving diversion. Unknown ordinary-signal refresh/diversion and independent background-service ownership remain open runtime work.
 
-The first app wiring passed offline Android36 `compileReleaseKotlin` and `lintVitalRelease` in3m22s. The later complete edge-group, merge, additive database, priority and label/diagnostic source also passed a fresh offline Android36 compile/lint check in2m35s (23tasks: four executed,19up-to-date). No DEX, package, asset, rendered-PDF, emulator or physical-device pass is implied.
+The first app wiring passed offline Android36 `compileReleaseKotlin` and `lintVitalRelease` in3m22s. Checkpoint`01e7911` passed in2m35s; the later cross-device/vehicle-approach source passed the fresh3m33s recheck noted above. Each used23tasks: four executed,19up-to-date. No DEX, package, asset, rendered-PDF, emulator or physical-device pass is implied.
 
 ## No Cams app connection
 

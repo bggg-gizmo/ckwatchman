@@ -8,6 +8,7 @@ import com.bggg.watchman.routing.RoutePlanningPolicy
 import com.bggg.watchman.storage.RoutingDeviceSnapshot
 
 fun roadAwareExposureSmoke() {
+    vehicleApproachSmoke()
     val lower = listOf(GeoPoint(0.0, 0.0), GeoPoint(0.0, 0.01), GeoPoint(0.0, 0.02))
     val upper = lower.map { it.copy(lat = 0.0004) }
     fun route(points: List<GeoPoint>) = Route(points, emptyList(), 2000.0, 200.0,
@@ -148,19 +149,26 @@ fun roadAwareExposureSmoke() {
         emptyList(),emptyList(),emptySet(),"Two provider edges on the SAME source way",1000,2000)
     check(Policy.blockingSegments(dense,signal,near,Policy.verify(dense,twoEdges,1100),1100).size==2)
     check(Policy.blockingSegments(dense,signal,near,layoutProof,2000).size==near.size)
+    val denseDevices=listOf(signal,signal.copy(id="node/99",sourceRecordId="node/99",type=CameraType.ALPR,
+        point=GeoPoint(0.0,0.0103)))
+    for(expectedEdges in 1..2) {
     var denseCalls=0
     val densePlan=NoCamsObstaclePlanner(router={_,_,exclusions,_->
         denseCalls++
         if(denseCalls==1) dense else {
-            check(exclusions.devices==listOf(signal) && exclusions.encounteredRoadPoints.size==1)
+            check(exclusions.devices==denseDevices && exclusions.encounteredRoadPoints.size==expectedEdges && exclusions.totalDevices==2) {
+                "Shared-edge regression: areas=${exclusions.devices.size}, locations=${exclusions.encounteredRoadPoints.size}, devices=${exclusions.totalDevices}"
+            }
             initial.copy(points=listOf(lower.first(),GeoPoint(0.01,0.0),GeoPoint(0.01,0.02),lower.last()),
                 distanceMeters=4500.0,durationSeconds=500.0)
         }
-    },readDevices={snapshot()},now={0},wallTime={1100},readRoadCoverage={path,_,_,_->
-        Policy.Observation(path.points,listOf(Policy.Span(100,0,path.points.lastIndex)),emptyList(),emptyList(),
+    },readDevices={RoutingDeviceSnapshot.freeze(denseDevices,"synthetic-shared-edge")},now={0},wallTime={1100},readRoadCoverage={path,_,_,_->
+        Policy.Observation(path.points,if(path.points.size==1001 && expectedEdges==2) twoEdges.spans else
+            listOf(Policy.Span(100,0,path.points.lastIndex)),emptyList(),emptyList(),
             emptySet(),"Synthetic exact layout only, no source coverage",1000,2000)
     }).plan(lower.first(),initial.destination)
-    check(denseCalls==2 && densePlan.assessment.weightedExposure==0L && densePlan.excludedDevices==1)
+    check(denseCalls==2 && densePlan.assessment.weightedExposure==0L && densePlan.excludedDevices==2)
+    }
     check(runCatching { Policy.verify(bypass, observation(bypass), 1100) { error("CANCELLED") } }
         .exceptionOrNull()?.message == "CANCELLED")
     check(runCatching { Policy.assess(bypass, snapshot(), proof, 1100) { error("CANCELLED") } }

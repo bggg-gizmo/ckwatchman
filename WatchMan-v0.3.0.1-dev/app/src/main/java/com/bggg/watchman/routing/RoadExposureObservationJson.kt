@@ -59,7 +59,8 @@ object RoadExposureObservationJson {
                         if (n % 128 == 0) checkActive()
                         positiveId(raw.get(n))
                     }
-                    ways += RoadAwareExposure.Way(id, refs, tags(e.optJSONObject("tags"))["highway"])
+                    val sourceTags=tags(e.optJSONObject("tags"))
+                    ways += RoadAwareExposure.Way(id, refs, sourceTags["highway"],sourceTags)
                 }
                 else -> error("Unexpected source element kind")
             }

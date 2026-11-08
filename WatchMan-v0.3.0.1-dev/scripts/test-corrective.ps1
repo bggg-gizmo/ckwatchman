@@ -8,6 +8,10 @@ if ($BuildName -notmatch '^build-[a-zA-Z0-9-]+$') { throw 'Use a simple build di
 $build = Join-Path $sourceRoot $BuildName
 New-Item -ItemType Directory -Force -Path $build | Out-Null
 if ([string]::IsNullOrWhiteSpace($ToolchainRoot)) { $ToolchainRoot = Join-Path $projectRoot 'toolchain' }
+$jsonJar=Join-Path $ToolchainRoot 'host-test/json-20260814.jar'
+if((Get-FileHash -LiteralPath $jsonJar -Algorithm SHA256).Hash -ne '7DD2DE1533E766E2B6C07D8194DA85145AD313A167A4760050F5C9B6839604FE') {
+    throw 'Supply the unmodified pinned org.json:json:20260814 host runtime. No automatic download performed.'
+}
 $java = Join-Path $ToolchainRoot 'jdk/jdk-17.0.20.1+1/bin/java.exe'
 $kotlin = Join-Path $ToolchainRoot 'kotlin/kotlinc/lib'
 $sources = @(
@@ -18,6 +22,9 @@ $sources = @(
     (Join-Path $sourceRoot 'app/src/test/java/com/bggg/watchman/NoCamsObstaclePlannerSmoke.kt'),
     (Join-Path $sourceRoot 'app/src/test/java/com/bggg/watchman/RouteProximityIndexSmoke.kt'),
     (Join-Path $sourceRoot 'app/src/main/java/com/bggg/watchman/routing/RoadAwareExposure.kt'),
+    (Join-Path $sourceRoot 'app/src/main/java/com/bggg/watchman/routing/VerifiedVehicleApproach.kt'),
+    (Join-Path $sourceRoot 'app/src/main/java/com/bggg/watchman/storage/SearchResultEvidenceJson.kt'),
+    (Join-Path $sourceRoot 'app/src/test/java/com/bggg/watchman/VehicleApproachSmoke.kt'),
     (Join-Path $sourceRoot 'app/src/main/java/com/bggg/watchman/cameras/CameraClassifier.kt'),
     (Join-Path $sourceRoot 'app/src/main/java/com/bggg/watchman/storage/RouteIdentity.kt'),
     (Join-Path $sourceRoot 'app/src/test/java/com/bggg/watchman/RoadAwareExposureSmoke.kt'),
@@ -89,7 +96,7 @@ $sources = @(
     (Join-Path $sourceRoot 'app/src/test/java/com/bggg/watchman/CorrectiveBehaviorSmoke.kt')
 )
 $jar = Join-Path $build 'corrective.jar'
-& $java "-Xmx${CompilerHeapMiB}m" '-XX:MaxMetaspaceSize=192m' '-XX:ActiveProcessorCount=2' '-cp' "$kotlin/*" org.jetbrains.kotlin.cli.jvm.K2JVMCompiler @sources '-classpath' "$kotlin/kotlin-stdlib.jar" '-include-runtime' '-jvm-target' '1.8' '-d' $jar
+& $java "-Xmx${CompilerHeapMiB}m" '-XX:MaxMetaspaceSize=192m' '-XX:ActiveProcessorCount=2' '-cp' "$kotlin/*" org.jetbrains.kotlin.cli.jvm.K2JVMCompiler @sources '-classpath' "$kotlin/kotlin-stdlib.jar;$jsonJar" '-include-runtime' '-jvm-target' '1.8' '-d' $jar
 if ($LASTEXITCODE -ne 0) { throw 'Corrective test compilation failed' }
-& $java '-Xmx128m' '-XX:ActiveProcessorCount=2' '-jar' $jar
+& $java '-Xmx128m' '-XX:ActiveProcessorCount=2' '-cp' "$jar;$jsonJar" com.bggg.watchman.CorrectiveBehaviorSmokeKt
 if ($LASTEXITCODE -ne 0) { throw 'Corrective behavior tests failed' }

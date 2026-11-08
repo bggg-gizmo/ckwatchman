@@ -72,6 +72,10 @@ WatchMan is active navigation. The selected route mode must affect graph explora
 
 ### No Cams
 
+**Name clarification (user instruction, 2026-11-08): `No Cams` is shorthand and the existing UI label for `No Cameras or Sensors`.** The mode must avoid *all* known meaningful camera **and** sensor encounters, including accepted traffic-device detections, whether or not a device photographs anything. In particular, it covers Flock/ALPR/LPR, speed/red-light cameras, the validated traffic-signal population, acoustic sensing, RF/electronic-signature systems (including SignalTrace/EOC Plus), surveillance, highway sensors, and every other supported device category. Neither device names nor `CameraType` enum naming may be used to narrow routing to photographic cameras only.
+
+Keep the complete accepted device population in acquisition, storage, awareness, and downstream reporting. Determine routed encounters using the existing conservative, source-verified affected-road policy; a nearby awareness record on a different proven-unaffected road is not automatically a routed encounter. Do not silently omit a category, drop records to obtain a route, treat unknown coverage as proven clear, or relax the strict No Cams acceptance rule. This clarification does not rename the UI mode or change routing implementation.
+
 Highest implementation priority.
 
 Construct legal routes around meaningful known camera/sensor exposure and seek zero encounters when reasonably viable.

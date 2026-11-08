@@ -30,6 +30,7 @@ $sources += Join-Path $sourceRoot 'app/src/test/java/com/bggg/watchman/RoadAware
 $sources += Join-Path $sourceRoot 'app/src/test/java/com/bggg/watchman/RoadCoverageSourceSmoke.kt'
 $sources += Join-Path $sourceRoot 'app/src/test/java/com/bggg/watchman/DeviceRecordMergeSmoke.kt'
 $sources += Join-Path $sourceRoot 'app/src/test/java/com/bggg/watchman/VehicleApproachSmoke.kt'
+$sources += Join-Path $sourceRoot 'app/src/test/java/com/bggg/watchman/RoadRiskConstraintSmoke.kt'
 $jar = Join-Path $build 'obstacle-tests.jar'
 $classpath = "$kotlin/kotlin-stdlib.jar;$JsonJar"
 & $java "-Xmx${CompilerHeapMiB}m" '-XX:MaxMetaspaceSize=192m' '-XX:ActiveProcessorCount=2' '-cp' "$kotlin/*" org.jetbrains.kotlin.cli.jvm.K2JVMCompiler @sources '-classpath' $classpath '-include-runtime' '-jvm-target' '1.8' '-d' $jar

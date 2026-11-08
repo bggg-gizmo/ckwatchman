@@ -77,8 +77,9 @@ object RoadAwareExposure {
     data class Assessment(val nearbyRelevantDevices: List<CameraPoi>, val encounters: List<CameraPoi>,
         val awarenessOnlyDevices: List<CameraPoi>, val verifiedRoadEncounters: Int, val unknownEncounters: Int,
         val weightedExposure: Long, val snapshotRevision: String,
-        val roadEncounters: List<RoadEncounter> = emptyList())
-    /** Only these verified affected segments may replace a conservative device-area blocker. */
+        val roadEncounters: List<RoadEncounter> = emptyList(),
+        val roadConstraints: List<RoadEncounter> = emptyList())
+    /** Candidate-specific segments, not a claim that an uncertain crossing is exposed or safe. */
     data class RoadEncounter(val device: CameraPoi, val segmentIndices: List<Int>)
 
     fun mayUseRoadCoverage(camera: CameraPoi) = camera.type == CameraType.TRAFFIC &&
@@ -173,6 +174,8 @@ object RoadAwareExposure {
         val encounters = ArrayList<CameraPoi>()
         val awarenessOnly = ArrayList<CameraPoi>()
         val roadEncounters = ArrayList<RoadEncounter>()
+        val roadConstraints = ArrayList<RoadEncounter>()
+        var retainedConstraintSegments = 0
         var roadCount = 0
         var unknownCount = 0
         var weight = 0L
@@ -184,6 +187,7 @@ object RoadAwareExposure {
             nearby += camera
             var roadDecision: Boolean? = null
             var affectedSegments = emptyList<Int>()
+            var constraintSegments: List<Int>? = null
             val originOverlap=route.requestedOrigin?.let { Geo.distanceMeters(it,camera.point)<=snapshot.corridorMeters }==true
             val destinationOverlap=route.requestedOrigin!=null &&
                 Geo.distanceMeters(route.destination.point,camera.point)<=snapshot.corridorMeters
@@ -205,9 +209,13 @@ object RoadAwareExposure {
                     val segments = index.withinSegments(camera.point)
                     if (segments.isNotEmpty() && segments.all { proof.matchedAt(it) }) {
                         affectedSegments = segments.filter { proof.wayAt(it) in parents }
+                        val contacts = parentContactSegments(camera.point, route, segments, parents, proof.observation,
+                            snapshot.corridorMeters, checkActive)
+                        if (contacts != null) {
+                            constraintSegments = (affectedSegments + contacts).distinct().sorted()
+                        }
                         if (affectedSegments.isNotEmpty()) roadDecision = true
-                        else if (separateParentGeometry(camera.point, route, segments, parents, proof.observation,
-                                snapshot.corridorMeters, checkActive)) roadDecision = false
+                        else if (contacts?.isEmpty() == true) roadDecision = false
                     }
                 }
             }
@@ -217,7 +225,10 @@ object RoadAwareExposure {
                 ((originOverlap && !originBound && route.requestedOrigin?.let {
                     Geo.distanceMeters(it,route.points.first())>1.0 }==true) ||
                     (destinationOverlap && !destinationBound &&
-                        Geo.distanceMeters(route.destination.point,route.points.last())>1.0))) roadDecision = null
+                        Geo.distanceMeters(route.destination.point,route.points.last())>1.0))) {
+                roadDecision = null
+                constraintSegments = null
+            }
             if (roadDecision == false) awarenessOnly += camera else {
                 encounters += camera
                 weight = Math.addExact(weight, entry.weight)
@@ -225,12 +236,21 @@ object RoadAwareExposure {
                     roadCount++
                     roadEncounters += RoadEncounter(camera, Collections.unmodifiableList(ArrayList(affectedSegments)))
                 } else unknownCount++
+                // Complete source context can isolate every unsafe candidate road even
+                // while a crossing remains UNKNOWN. It must not block a separate road
+                // merely because that road shares the awareness circle. Missing context
+                // or a bounded-memory refusal retains the complete device-area blocker.
+                constraintSegments?.takeIf { it.isNotEmpty() &&
+                    it.size <= MAX_RETAINED_CONSTRAINT_SEGMENTS-retainedConstraintSegments }?.let {
+                    retainedConstraintSegments += it.size
+                    roadConstraints += RoadEncounter(camera, Collections.unmodifiableList(ArrayList(it)))
+                }
             }
         }
         checkActive()
         return Assessment(Collections.unmodifiableList(nearby), Collections.unmodifiableList(encounters),
             Collections.unmodifiableList(awarenessOnly), roadCount, unknownCount, weight, snapshot.revision,
-            Collections.unmodifiableList(roadEncounters))
+            Collections.unmodifiableList(roadEncounters), Collections.unmodifiableList(roadConstraints))
     }
 
     /** Rebind only an exact remaining suffix of this route. Never copy edge indices onto
@@ -262,12 +282,12 @@ object RoadAwareExposure {
     private fun fresh(source: Observation, now: Long) = now >= source.observedAtMillis && now < source.validUntilMillis
 
     /** Exact edge walking of a shape cannot distinguish stacked/coincident roads by itself.
-     * Before a negative exemption, require every affected parent geometry and reject any
-     * nearby crossing/overlap. Missing geometry and grade ambiguity remain UNKNOWN.
+     * Require every affected parent geometry and retain ALL nearby crossing/overlap
+     * segments as constraints. Missing geometry returns null; grade ambiguity stays UNKNOWN.
      * Checking full local segments may over-reject a very long segment; never relax it.
      */
-    private fun separateParentGeometry(camera: GeoPoint, route: Route, segments: List<Int>, parents: Set<Long>,
-        source: Observation, radius: Double, active: () -> Unit): Boolean {
+    private fun parentContactSegments(camera: GeoPoint, route: Route, segments: List<Int>, parents: Set<Long>,
+        source: Observation, radius: Double, active: () -> Unit): List<Int>? {
         data class XY(val x: Double, val y: Double)
         fun xy(p: GeoPoint): XY {
             var lon = p.lon-camera.lon
@@ -293,22 +313,23 @@ object RoadAwareExposure {
             }
             return minOf(distance(a,c,d),distance(b,c,d),distance(c,a,b),distance(d,a,b)) <= 1.0
         }
+        val contacts = HashSet<Int>()
         for (wayId in parents) {
             active()
-            val way = source.ways[wayId] ?: return false
-            val geometry = way.nodeIds.map { source.nodes[it]?.point ?: return false }
-            if (geometry.any { abs(it.lat)>=85.0 } || geometry.zipWithNext().any { abs(it.first.lon-it.second.lon)>180.0 }) return false
+            val way = source.ways[wayId] ?: return null
+            val geometry = way.nodeIds.map { source.nodes[it]?.point ?: return null }
+            if (geometry.any { abs(it.lat)>=85.0 } || geometry.zipWithNext().any { abs(it.first.lon-it.second.lon)>180.0 }) return null
             for (i in 0 until geometry.lastIndex) {
                 if (i % 64 == 0) active()
                 val c=xy(geometry[i]); val d=xy(geometry[i+1])
                 if (distance(XY(0.0,0.0),c,d)>radius+1.0) continue
                 for ((j, segment) in segments.withIndex()) {
                     if (j % 64 == 0) active()
-                    if (touches(xy(route.points[segment]),xy(route.points[segment+1]),c,d)) return false
+                    if (touches(xy(route.points[segment]),xy(route.points[segment+1]),c,d)) contacts += segment
                 }
             }
         }
-        return true
+        return contacts.sorted()
     }
     private fun valid(p: GeoPoint) = p.lat.isFinite() && p.lat in -90.0..90.0 && p.lon.isFinite() && p.lon in -180.0..180.0
     private fun ordinarySignalTags(tags: Map<String, String>) = !broaderDeviceEvidence(tags) &&
@@ -352,6 +373,7 @@ object RoadAwareExposure {
     }
 
     private val NODE_ID = Regex("node/[1-9][0-9]{0,18}")
+    private const val MAX_RETAINED_CONSTRAINT_SEGMENTS = 250_000
     private val BROADER_DEVICE = Regex("(?i)\\b(camera|surveillance|cctv|alpr|anpr|sensor|signaltrace|shotspotter|soundthinking|rf_sensor)\\b")
     private val MOTOR_ROADS = setOf("motorway", "motorway_link", "trunk", "trunk_link", "primary", "primary_link",
         "secondary", "secondary_link", "tertiary", "tertiary_link", "unclassified", "residential", "living_street", "service", "road", "track")

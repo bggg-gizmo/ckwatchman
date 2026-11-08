@@ -25,6 +25,7 @@ $sources = @(
     (Join-Path $sourceRoot 'app/src/main/java/com/bggg/watchman/routing/VerifiedVehicleApproach.kt'),
     (Join-Path $sourceRoot 'app/src/main/java/com/bggg/watchman/storage/SearchResultEvidenceJson.kt'),
     (Join-Path $sourceRoot 'app/src/test/java/com/bggg/watchman/VehicleApproachSmoke.kt'),
+    (Join-Path $sourceRoot 'app/src/test/java/com/bggg/watchman/RoadRiskConstraintSmoke.kt'),
     (Join-Path $sourceRoot 'app/src/main/java/com/bggg/watchman/cameras/CameraClassifier.kt'),
     (Join-Path $sourceRoot 'app/src/main/java/com/bggg/watchman/storage/RouteIdentity.kt'),
     (Join-Path $sourceRoot 'app/src/test/java/com/bggg/watchman/RoadAwareExposureSmoke.kt'),

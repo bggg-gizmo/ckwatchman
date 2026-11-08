@@ -9,6 +9,7 @@ import com.bggg.watchman.storage.RoutingDeviceSnapshot
 
 fun roadAwareExposureSmoke() {
     vehicleApproachSmoke()
+    roadRiskConstraintSmoke()
     val lower = listOf(GeoPoint(0.0, 0.0), GeoPoint(0.0, 0.01), GeoPoint(0.0, 0.02))
     val upper = lower.map { it.copy(lat = 0.0004) }
     fun route(points: List<GeoPoint>) = Route(points, emptyList(), 2000.0, 200.0,

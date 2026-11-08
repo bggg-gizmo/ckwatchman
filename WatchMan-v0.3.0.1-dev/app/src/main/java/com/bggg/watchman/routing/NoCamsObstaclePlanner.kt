@@ -90,7 +90,7 @@ class NoCamsObstaclePlanner(
             }
             // Keep all known exclusions accumulated across detours. Never truncate to a few clusters.
             var changed = false
-            val roadEncounters = assessment.roadEncounters.associateBy { DeviceIdentity.logicalKey(it.device) }
+            val roadConstraints = assessment.roadConstraints.associateBy { DeviceIdentity.logicalKey(it.device) }
             val proximity = RouteProximityIndex(route, snapshot.corridorMeters) { remaining(); Unit }
             // Several devices can affect the same provider edge. One location blocks that
             // edge; retain ALL device records/areas and all prior detour constraints.
@@ -100,12 +100,13 @@ class NoCamsObstaclePlanner(
                 remaining()
                 val key = DeviceIdentity.logicalKey(camera)
                 if (obstacles[key] != camera) { obstacles[key] = camera; changed = true }
-                val affected = roadEncounters[key]?.segmentIndices
+                val affected = roadConstraints[key]?.segmentIndices
                 if (affected == null && areaObstacles[key] != camera) {
                     areaObstacles[key] = camera; changed = true
                 }
-                // Verified source membership blocks only affected candidate roads. Unknown
-                // coverage retains the complete area AND every nearby candidate segment.
+                // Complete source context isolates all affected/ambiguous candidate
+                // roads, without clearing an UNKNOWN encounter. Missing context retains
+                // the complete area AND every nearby candidate segment.
                 val segments = RoadAwareExposure.blockingSegments(route,camera,
                     affected ?: proximity.withinSegments(camera.point),coverage,wallTime()) { remaining(); Unit }
                 val blockSegments = segments.ifEmpty {

@@ -20,6 +20,12 @@ Required:
 - keep route optimization, turn-by-turn, exports, alerts, analytics and history semantically consistent;
 - explicitly distinguish weighted route exposure from raw corridor-device counts when both are presented.
 
+### User-locked accepted traffic-signal coverage (2026-11-08)
+
+The existing SafeTOC-compatible Overpass `node["highway"="traffic_signals"]` feed and its accepted traffic-device population are accurate enough to keep, by explicit user instruction. This includes the existing `TRAFFIC` routing inclusion, unit weights and 180 m nearby awareness. Do not make `NoRoute` disappear by reclassifying, deleting, suppressing, exempting or downgrading accepted traffic-signal records, even when later OSM source metadata instead lists an all-way stop. Preserve all other camera/sensor families, including Flock/ALPR.
+
+Record any disagreement between the current source tags and accepted cached records without treating road-control metadata as proof that a sensor must be excluded. Missing/mismatched affected-road evidence remains conservatively UNKNOWN. Keep current discovery queries, storage, source identities, previews, map, alerts, export labels and routing weighting unchanged until the user explicitly authorizes a behavior change. Resolve the backend graph/exclusion failure independently.
+
 ## 2. Whole-route camera-aware search
 
 ### No Cams

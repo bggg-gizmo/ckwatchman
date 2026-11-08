@@ -16,6 +16,8 @@ object RoadExclusionEncoding {
         cancelled: () -> Boolean = { false }): Encoded {
         check(!cancelled()) { "Road exclusion encoding cancelled or deadline reached" }
         require(perimeterBudgetMeters > 0 && maximumLocations > 0 && maximumPolygonVertices >= 4)
+        require(roads.size<=NoCamsObstaclePlanner.MAX_ROAD_BLOCKS && roads.all {
+            it.lat.isFinite() && it.lat in -90.0..90.0 && it.lon.isFinite() && it.lon in -180.0..180.0 })
         fun perimeter(ring: List<GeoPoint>) = ring.zipWithNext().sumOf { Geo.distanceMeters(it.first, it.second) }
         if (rings.sumOf(::perimeter) <= perimeterBudgetMeters && rings.sumOf { it.size } <= maximumPolygonVertices) {
             // A small polygon payload does not establish that it covers every road blocker.
@@ -27,9 +29,12 @@ object RoadExclusionEncoding {
             if (uncovered.size <= maximumLocations) return Encoded(rings, uncovered)
         }
         check(roads.isNotEmpty()) { "Backend polygon perimeter budget exceeded; encountered-road exclusions unavailable" }
-        // Original convex rings remain useful when a complete merged outline has too many
-        // vertices. Every candidate is an actual exclusion region, never a convex hull.
-        val choices = (rings + additionalRings).distinct()
+        // Original device areas remain useful when a merged outline exceeds its budget.
+        // Small local boxes can represent multiple nearby road blockers, for example the
+        // approaches to one junction. They may conservatively block extra roads; they
+        // never clear exposure or replace final whole-candidate validation. No wide hull.
+        val localBoxes = if(roads.size>maximumLocations) localRoadBoxes(roads,cancelled) else emptyList()
+        val choices = (rings + additionalRings + localBoxes).distinct()
         val lengths = choices.map(::perimeter)
         val uncovered = roads.indices.toMutableSet()
         val candidates = choices.indices.toMutableSet()
@@ -42,6 +47,7 @@ object RoadExclusionEncoding {
         var remainingVertices = maximumPolygonVertices
         while (candidates.isNotEmpty()) {
             check(!cancelled()) { "Road exclusion encoding cancelled or deadline reached" }
+            if(localBoxes.isNotEmpty() && uncovered.size<=maximumLocations) break
             val best = candidates.filter { lengths[it] <= remaining && lengths[it] > 0.0 && choices[it].size <= remainingVertices }
                 .map { index -> index to coverage[index].count { it in uncovered } }
                 .filter { it.second > 0 }
@@ -58,6 +64,37 @@ object RoadExclusionEncoding {
             "Road backend cannot represent all accumulated exclusions within its polygon vertex/perimeter/location budgets"
         }
         return Encoded(selected, roads.filterIndexed { index, _ -> index in uncovered })
+    }
+
+    /** At most384 proposals from128 actual blocked-road locations. Each box is at most
+     *50m across, with an interior margin; seam/polar geometry is refused, never wrapped
+     * into a world-spanning region. The selector still verifies coverage for every point.
+     */
+    private fun localRoadBoxes(roads: List<GeoPoint>, cancelled: () -> Boolean): List<List<GeoPoint>> {
+        val boxes=LinkedHashSet<List<GeoPoint>>()
+        val latitudeMargin=Math.toDegrees(1.5/6_371_000.0)
+        for(center in roads.distinct().sortedWith(compareBy<GeoPoint> { it.lat }.thenBy { it.lon })) {
+            check(!cancelled()) { "Road exclusion encoding cancelled or deadline reached" }
+            if(kotlin.math.abs(center.lat)>=85.0) continue
+            for(radius in listOf(10.0,15.0,20.0)) {
+                val group=roads.filter {
+                    check(!cancelled()) { "Road exclusion encoding cancelled or deadline reached" }
+                    Geo.distanceMeters(center,it)<=radius
+                }
+                if(group.size<2 || group.any { kotlin.math.abs(it.lat)>=85.0 }) continue
+                val longitudeMargin=latitudeMargin/kotlin.math.cos(Math.toRadians(center.lat))
+                val south=group.minOf { it.lat }-latitudeMargin
+                val north=group.maxOf { it.lat }+latitudeMargin
+                val west=group.minOf { it.lon }-longitudeMargin
+                val east=group.maxOf { it.lon }+longitudeMargin
+                if(south<=-85.0 || north>=85.0 || west<=-180.0 || east>=180.0 || east-west>180.0) continue
+                val southwest=GeoPoint(south,west)
+                val northeast=GeoPoint(north,east)
+                if(Geo.distanceMeters(southwest,northeast)>50.0) continue
+                boxes+=listOf(southwest,GeoPoint(south,east),northeast,GeoPoint(north,west),southwest)
+            }
+        }
+        return boxes.toList()
     }
 
     /** The half-metre interior margin avoids relying on boundary-rounding or snapping ties. */

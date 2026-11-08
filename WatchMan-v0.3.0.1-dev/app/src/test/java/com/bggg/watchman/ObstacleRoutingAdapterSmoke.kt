@@ -56,7 +56,42 @@ fun main() {
     check(smallPayload.polygons == listOf(box) && smallPayload.roadPoints == listOf(boundary, outside))
     check(RoadExclusionEncoding.encode(emptyList(), listOf(outside)).roadPoints == listOf(outside))
     check(runCatching { RoadExclusionEncoding.encode(listOf(box),
-        (0..50).map { GeoPoint(0.0, 0.002 + it * 0.00001) }) }.isFailure)
+        (0..50).map { GeoPoint(0.0, 0.002 + it * 0.02) }) }.isFailure)
+    // Synthetic junction groups, not real route geometry. All128 accumulated
+    // blockers must fit without lifting either wire limit or dropping a point.
+    val junctionRoads=(0 until 128).map { GeoPoint((it/4)*0.002,(it%4)*0.00002) }
+    val compact=RoadExclusionEncoding.encode(emptyList(),junctionRoads)
+    check(compact.roadPoints.size<=50 && compact.polygons.sumOf { it.size }<=100)
+    check(compact.polygons.isNotEmpty())
+    check(junctionRoads.all { it in compact.roadPoints || compact.polygons.any { ring ->
+        RoadExclusionEncoding.containsInterior(ring,it) } })
+    check(compact.polygons.all { ring -> com.bggg.watchman.util.Geo.distanceMeters(ring[0],ring[2])<=50.0 })
+    check(compact.polygons.sumOf { ring -> ring.zipWithNext().sumOf {
+        com.bggg.watchman.util.Geo.distanceMeters(it.first,it.second) } }<=9000.0)
+    check(compact==RoadExclusionEncoding.encode(emptyList(),junctionRoads))
+    val unrelated=GeoPoint(0.001,0.001)
+    check(compact.polygons.none { RoadExclusionEncoding.containsInterior(it,unrelated) })
+    for(unsupported in listOf((0..50).map { GeoPoint(89.0,it*0.000001) },
+        (0..50).map { GeoPoint(it*0.0000001,if(it%2==0) 179.999999 else -179.999999) })) {
+        check(runCatching { RoadExclusionEncoding.encode(emptyList(),unsupported) }.isFailure)
+    }
+    val random=kotlin.random.Random(43091)
+    repeat(24) { trial ->
+        val latitude=listOf(-60.0,0.0,60.0)[trial%3]
+        val clustered=(0 until 64).map { i -> GeoPoint(latitude+random.nextDouble(-0.00002,0.00002),
+            (i/4)*0.002+random.nextDouble(-0.00002,0.00002)) }
+        val encoded=RoadExclusionEncoding.encode(emptyList(),clustered)
+        check(encoded.roadPoints.size<=50 && encoded.polygons.sumOf { it.size }<=100)
+        // Independent rectangle-membership oracle, separate from the production
+        // polygon containment predicate used by the selector.
+        check(clustered.all { p -> p in encoded.roadPoints || encoded.polygons.any { ring ->
+            p.lat>ring.minOf { it.lat } && p.lat<ring.maxOf { it.lat } &&
+                p.lon>ring.minOf { it.lon } && p.lon<ring.maxOf { it.lon } } })
+        check(encoded.polygons.all { ring -> com.bggg.watchman.util.Geo.distanceMeters(ring[0],ring[2])<=50.0 })
+        check(encoded.polygons.sumOf { ring -> ring.zipWithNext().sumOf {
+            com.bggg.watchman.util.Geo.distanceMeters(it.first,it.second) } }<=9000.0)
+    }
+    println("Local road-block encoding:128 junction blockers,24 independent rectangle-coverage trials, unchanged wire budgets, bounded extent, distant/polar/seam refusal and determinism PASS; not route acceptance")
     val separated = (0..12).map { camera.copy(id = "SEPARATED_$it", point = GeoPoint(0.0, it * 0.02)) }
     val roadPoints = listOf(GeoPoint(0.0, 0.01), GeoPoint(0.001, 0.03))
     val roadRequest = provider.request(origin, destination, separated, roadPoints)

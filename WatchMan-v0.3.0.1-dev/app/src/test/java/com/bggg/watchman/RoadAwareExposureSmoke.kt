@@ -53,6 +53,25 @@ fun roadAwareExposureSmoke() {
     val hit = Policy.assess(crossing, snapshot(), Policy.verify(crossing, observation(crossing, 100), 1100), 1100)
     check(hit.encounters == listOf(signal) && hit.verifiedRoadEncounters == 1 && hit.weightedExposure == 1L)
     check(hit.roadEncounters.single().segmentIndices == listOf(0,1))
+    // User-accepted SafeTOC traffic_signals remain counted when newer source nodes
+    // describe all-way stops. Road-control metadata cannot silently delete accepted
+    // records or manufacture a road-specific exemption to escape backend NoRoute.
+    val acceptedTrafficSignals = (100L..103L).map { nodeId ->
+        signal.copy(id="node/$nodeId", sourceRecordId="node/$nodeId")
+    }
+    val currentAllWayStops = nodes + (100L..103L).map { nodeId ->
+        Policy.Node(nodeId, signal.point, mapOf("highway" to "stop", "stop" to "all"))
+    }
+    val stopMetadata = observation(crossing, 100, sourceNodes=currentAllWayStops,
+        parents=(100L..103L).toSet())
+    val acceptedTrafficSnapshot = RoutingDeviceSnapshot.freeze(acceptedTrafficSignals,
+        "synthetic-accepted-safetoc-signals-with-newer-stop-tags")
+    val stopAssessment = Policy.assess(crossing, acceptedTrafficSnapshot,
+        Policy.verify(crossing, stopMetadata, 1100), 1100)
+    check(stopAssessment.nearbyRelevantDevices == acceptedTrafficSignals)
+    check(stopAssessment.encounters == acceptedTrafficSignals && stopAssessment.awarenessOnlyDevices.isEmpty())
+    check(stopAssessment.verifiedRoadEncounters == 0 && stopAssessment.unknownEncounters == 4)
+    check(stopAssessment.weightedExposure == 4L && stopAssessment.roadConstraints.isEmpty())
     val reverse = route(lower.reversed())
     check(Policy.assess(reverse, snapshot(), Policy.verify(reverse, observation(reverse, 100), 1100), 1100).weightedExposure == 1L)
     // No guessed directional/FOV exemption. Unknown source coverage keeps the full radius.

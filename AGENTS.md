@@ -58,11 +58,23 @@ Preserve accepted:
 
 Difficult requirements remain requirements.
 
+## User-locked SafeTOC traffic-signal coverage (2026-11-08)
+
+The user has explicitly confirmed that the existing OpenStreetMap/Overpass `node["highway"="traffic_signals"]` discovery and resulting SafeTOC-compatible traffic-device population are accurate enough to keep. This is **accepted, user-validated project scope**, not an invitation to reclassify these results as merely intersections or narrow them to independently camera-tagged nodes. Do not change this acquisition clause or its existing 700-result floor, `CameraType.TRAFFIC` routing inclusion, unit exposure weighting, 180 m awareness, records, source identities, or existing map/alert/export behavior. Preserve the other sensor families, including Flock/ALPR, without exception.
+
+New road-control metadata such as `highway=stop` and `stop=all`, absence from a later Overpass snapshot, uncertainty about an affected road, provider limits, or backend `NoRoute` do **not** by themselves authorize removing, suppressing, downgrading, reclassifying, or exempting a previously accepted signal record. Preserve the accepted record and its provenance; represent unsupported road-specific attribution conservatively as UNKNOWN instead of manufacturing an exemption. Investigate source disagreement separately from the routing failure. No Cams still requires strict avoidance and fully checked candidates.
+
+**CODEX and all contributors: do not change this accepted coverage or weaken its detection/weighting policy without a new explicit instruction from the user.** A source audit or failed route is not that instruction.
+
 ## Active-navigation routing contract
 
 WatchMan is active navigation. The selected route mode must affect graph exploration and path construction.
 
 ### No Cams
+
+**Name clarification (user instruction, 2026-11-08): `No Cams` is shorthand and the existing UI label for `No Cameras or Sensors`.** The mode must avoid *all* known meaningful camera **and** sensor encounters, including accepted traffic-device detections, whether or not a device photographs anything. In particular, it covers Flock/ALPR/LPR, speed/red-light cameras, the validated traffic-signal population, acoustic sensing, RF/electronic-signature systems (including SignalTrace/EOC Plus), surveillance, highway sensors, and every other supported device category. Neither device names nor `CameraType` enum naming may be used to narrow routing to photographic cameras only.
+
+Keep the complete accepted device population in acquisition, storage, awareness, and downstream reporting. Determine routed encounters using the existing conservative, source-verified affected-road policy; a nearby awareness record on a different proven-unaffected road is not automatically a routed encounter. Do not silently omit a category, drop records to obtain a route, treat unknown coverage as proven clear, or relax the strict No Cams acceptance rule. This clarification does not rename the UI mode or change routing implementation.
 
 Highest implementation priority.
 

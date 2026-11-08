@@ -20,6 +20,10 @@ The selected objective must survive acquisition, graph search, route selection, 
 
 ### No Cams
 
+User clarification, 2026-11-08: **`No Cams` means `No Cameras or Sensors`; the short name is only the existing UI label.** Its strict avoidance objective covers every known meaningful camera, non-camera sensor, surveillance device, and accepted traffic device in the validated taxonomy—not merely devices that capture photographs or video. Covered families include Flock/ALPR/LPR, speed/red-light cameras, accepted traffic signals, acoustic sensors, RF/electronic-signature systems such as SignalTrace/EOC Plus, highway/traffic sensors, surveillance devices, and all other supported families. A device must not become exempt solely because it is called a sensor rather than a camera, or because the internal taxonomy uses `CameraType` naming.
+
+Preserve the whole accepted detection population and its weights; determine actual routed exposure with source-backed affected-road evidence while retaining the 180 m nearby awareness set separately. Unknown affected-road coverage remains conservative. This is a **semantic clarification of the existing mode, not a request to rename it, remove features, weaken strict avoidance, or change code**.
+
 Primary priority.
 
 Actively search around known cameras/sensors and seek zero meaningful encounters when reasonably feasible.
@@ -143,6 +147,10 @@ The taxonomy must support consistent:
 Known supported vendor/device families from prior work must remain represented without hard-coding the architecture to only those families.
 
 Bare traffic-signal data must not be misclassified as a camera/sensor encounter unless the validated taxonomy says it is relevant.
+
+User clarification, 2026-11-08 (authoritative interpretation of the previous sentence): the existing SafeTOC-compatible `node["highway"="traffic_signals"]` acquisition clause and its accepted `TRAFFIC` device population **have already been validated accurate enough to retain**. They are relevant under the accepted WatchMan taxonomy even when an individual OSM node lacks an additional `camera`/`surveillance` tag. Do not narrow this clause to independent camera evidence, remove accepted records as merely intersections, or lower their routing weights to make No Cams pass. Preserve the present Overpass traffic-device query and limits, live/national/regional device coverage, 180 m awareness, exposure accounting, source identities, map/alerts/exports, and all other sensor families.
+
+A later OSM road-control tag update (including `highway=stop`, `stop=all`) does not independently invalidate an accepted traffic-signal record. Keep its established coverage while documenting source disagreement and conservatively representing unverified affected-road attribution as UNKNOWN. Backend `NoRoute`, finite search resources, stale records, and changing upstream tags never authorize a unilateral detection reduction. Any actual change to this accepted detection/weighting policy requires a further explicit user instruction, not an agent's inference.
 
 ## 8. Preloaded/offline data
 

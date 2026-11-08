@@ -20,6 +20,10 @@ The selected objective must survive acquisition, graph search, route selection, 
 
 ### No Cams
 
+User clarification, 2026-11-08: **`No Cams` means `No Cameras or Sensors`; the short name is only the existing UI label.** Its strict avoidance objective covers every known meaningful camera, non-camera sensor, surveillance device, and accepted traffic device in the validated taxonomy—not merely devices that capture photographs or video. Covered families include Flock/ALPR/LPR, speed/red-light cameras, accepted traffic signals, acoustic sensors, RF/electronic-signature systems such as SignalTrace/EOC Plus, highway/traffic sensors, surveillance devices, and all other supported families. A device must not become exempt solely because it is called a sensor rather than a camera, or because the internal taxonomy uses `CameraType` naming.
+
+Preserve the whole accepted detection population and its weights; determine actual routed exposure with source-backed affected-road evidence while retaining the 180 m nearby awareness set separately. Unknown affected-road coverage remains conservative. This is a **semantic clarification of the existing mode, not a request to rename it, remove features, weaken strict avoidance, or change code**.
+
 Primary priority.
 
 Actively search around known cameras/sensors and seek zero meaningful encounters when reasonably feasible.
